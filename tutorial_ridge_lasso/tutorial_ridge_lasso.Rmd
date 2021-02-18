@@ -1,0 +1,727 @@
+---
+title: 'Tutorial 1: Linear model selection and regularization (DSE 2021)'
+author: "Madina Kurmangaliyeva"
+output: 
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+tutorial:
+  id: "dse_mk.tutorial_ridge_lasso.v1"
+  version: 1
+runtime: shiny_prerendered
+description: "Ridge and Lasso regressions"
+---
+
+## Introduction
+
+This tutorial follows R lab #2 from Chapter 6 of [An Introduction to Statistical Learning by James, Witten, Hastie, and Tibshirani](http://faculty.marshall.usc.edu/gareth-james/ISL/Chapter%206%20Labs.txt). You can see the lab from ISLR translated to Python by Jordi Warmenhoven and N Jannasch [here](https://nbviewer.jupyter.org/github/JWarmenhoven/ISL-python/blob/master/Notebooks/Chapter%206.ipynb).
+
+```{r setup}
+
+# If you are running this tutorial on your own computer, first install all required packages by uncommenting the line below
+# install.packages(c("tidyverse", "learnr", "ISLR", "naniar", "glmnet"))
+library(learnr)
+library(tidyverse)
+```
+
+The ISLR provides a good old classic dataset `Hitters` that has records and salaries for baseball players. In the next line of code we are asking to give us the `Hitters` dataset from the `ISLR` package and we save it as `Hitters` in our own R session.
+
+```{r load-data}
+Hitters <- ISLR::Hitters
+```
+
+
+
+
+Hitters dataset's list of variables:
+* `AtBat` - Number of times at bat 
+* `Hits` - Number of hits 
+* `HmRun` - Number of home runs 
+* `Runs` - Number of runs 
+* `RBI` - Number of runs batted
+* `Walks` - Number of walks
+* `Years` - Number of years in the major leagues
+* `CAtBat` - Number of times at bat during his career
+* `CHits` - Number of hits during his career
+* `CHmRun` - Number of home runs during his career
+* `CRuns` - Number of runs during his career
+* `CRBI` - Number of runs batted in during his career
+* `CWalks` - Number of walks during his career
+* `League` - A factor with levels A and N indicating player's league in 1986
+* `Division` - A factor with levels E and W indicating player's division
+* `PutOuts` - Number of put outs 
+* `Assists` - Number of assists
+* `Errors` - Number of errors
+* `Salary` - 1987 annual salary on opening day in thousands of dollars
+* `NewLeague` - A factor with levels A and N indicating player's league in 1987
+
+
+
+
+```{r}
+Hitters %>% str()
+```
+
+
+### Exercise: Inspect the head of the data
+
+Let's do the simplest exercise. Use `head()` function to see the top 6 rows of the dataset. Remember, you can use `hint` button to see the answer.
+
+```{r inspect-data-head, exercise=TRUE, exercise.eval=FALSE}
+Hitters %>%  ____()
+```
+
+```{r inspect-data-head-hint}
+Hitters %>%  head()
+```
+
+
+### Exercise: Visualize the target variable
+
+
+We want to predict Salaries of baseball players, so it would be great if we first plotted the data to get acquainted with the data.
+
+
+```{r plot, exercise = TRUE, exercise.eval=FALSE}
+
+Hitters %>% 
+  ggplot(aes(x = ____)) + geom_density() + theme_bw()
+```
+```{r plot-hint}
+
+Hitters %>% 
+  ggplot(aes(x = Salary)) + geom_density() + theme_bw()
+```
+
+As you can see the target variable -- Salary -- has a long right tail, which is usually expected for income data. So no surprises here.
+
+
+You can also check how `Salary` is distributed depending on the `Years` of experience of the player. 
+
+```{r plot2, exercise = TRUE, exercise.eval=FALSE}
+
+Hitters %>% 
+  ggplot(aes(x = ____, y = ____)) + geom_point() + theme_bw()
+```
+```{r plot2-hint}
+
+Hitters %>% 
+  ggplot(aes(x = Years, y = Salary)) + geom_point() + theme_bw()
+```
+
+In general, I expect that for your own projects you would inspect thoroughly the data by visualizing different combinations of variables first, before even starting to do any regressions. 
+
+### Don't miss a gorilla in your own data
+
+> Always plot the data and inspect it. Otherwise, you might end up running regressions on a gorilla. Yes, that was a real experiment. Teachers gave students a dataset to test a hypothesis. Many students did not visualize the data, so they did not discover that something was really fishy (or gorilly) with the dataset. (Read more on the experiment [here]((https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02133-w)). ![gorilla data](images/gorilla.jpg) 
+
+
+## Dealing with missing data
+
+One of the most important and painful topic in most of the projects is missing data. You might rush into data analysis, only to realize to your own regret that you should have inspected whether your data is complete earlier on.
+
+
+### Exercise: counting missing observations
+
+Count how many missing observations there are for the following variables: `Salary`, `Years`, `Runs`
+
+```{r count-missing,  exercise=TRUE, exercise.eval = FALSE}
+Hitters %>% count(is.na(____))
+```
+
+```{r count-missing-hint}
+Hitters %>% count(is.na(Salary))
+```
+
+
+Alternatively, you can use `naniar` package to quickly visualize and amend missing values. 
+
+```{r inspect-missing-data}
+Hitters %>% naniar::vis_miss()
+```
+
+As you can see, only the information on salaries is missing for some players. Let's delete those observations from the dataset.
+
+```{r delete-missing}
+Hitters_clean <- Hitters %>% 
+  filter(!is.na(Salary))
+
+Hitters_clean %>% count(is.na(Salary))
+```
+
+
+
+```{r quiz_missing, echo=FALSE}
+quiz(
+  question("Wait a second. Is it ok to delete observations with missing data in this setting?",
+    answer("Yes, it is ok, since  we are working on a prediction task. Only inference problems require careful assessment of the reasons why some values are missing"),
+    answer("Yes, it is ok, since  observations are missing only for the dependent (or target) variable, which we are trying to predict."),
+    answer("No, it is not ok, but we have to since we need complete data for regression-based methods. So we proceed with caution and discuss the direction of the potential bias.", correct = TRUE)))
+```
+
+
+### Is missing data a problem in our case?
+
+Is it potentially a big problem?
+
+```{r size-missing}
+sum(is.na(Hitters$Salary))/nrow(Hitters)
+```
+
+Yes, 18.3% of observations have no information on salaries. That's a big chunk. If it was less than 1%, it would be another story.
+
+For example, if those 18.3%  are the top-earning players, then the predictions based on the non-missing players will consistently undershoot the true salaries. If those 18.3%  are all  low-earning players, then the opposite happens: the predictions will consistently overshoot the true salaries. The best scenario happens when the data is missing _completely at random_, i.e., the players with missing information about their salaries are on average the same as those for whom we do not know the information. 
+
+
+The last hypothesis we can actually check with the data by running a simple regression of `is.na(Salary)` on all other variables, where `is.na(Salary)` is a logical vector that equals `TRUE` for observations with missing salary data and `False`, otherwise. 
+
+
+```{r check_missing_atrandom}
+
+lm(is.na(Salary) ~ ., data = Hitters) %>% summary()
+
+```
+
+
+As you can see from the regression table above, the incidence of missing salary information  is correlated with `PutOuts` variable. Look, I know nothing about baseball. If I really cared about proper prediction model of salaries of baseball players in 1986, I would read a lot about the topic and tried to reconstruct plausible reasons why the salary information is missing in this dataset. The first thing I would do, I would learn how this dataset was collected. If this did not answer my questions, I would contact those who collected the data and ask them whether those players with missing salary data are in some way special.
+
+It is quite likely that in real life  you will have to deal with data far from ideal: missing data, non-random samples. While in general the prediction tools are easy to use once the data is clean and representative, the very first steps may be messy and may require your direct judgment and intuition on what to do with the data. (And to my opinion, that's where you would generate the value added to the company or organization you are working.)
+
+
+```{r quiz_missing2, echo=FALSE}
+quiz(
+  question("What if we are interested in predicting the salaries only for baseball players whose salaries are public information.  Is it ok to delete observations with missing data in this setting?",
+    answer("Yes, it is ok", correct = TRUE),
+    answer("No, it is not ok, proceed with caution")))
+```
+
+
+### Answer explained and conclusions
+
+In this scenario, you are __not__ interested in the true salaries of the baseball players for whom that information is __not__ public information.  Hence, those players are not in the population of your interest, so you can just delete those observations without a second thought.
+
+> __Bottomline:__ You need to understand 1) whether the observations with missing data is in the population of your interest and 2) if yes, understand why some data is missing, test the hypothesis that the data is missing at random, and provide plausible explanations. 
+
+But for now, let's assume we are in an ideal situation that the data is missing at random. So we proceed our work with `Hitters_clean` dataset.
+
+
+## Ridge
+
+Now, before we go into the nitty-gritty details of Ridge regression, let's return back to the simplest example of the height of musicians at the Vienna conservatory, which I gave to illustrate how inference tools are not the same as prediction tools.
+
+__Question:__ Can you now explain why the sample mean is __not__ the best prediction using bias-variance trade-off intuition?
+
+We learn in econometrics that OLS is BLUE -- Best Linear Unbiased Estimator. But we also learned this week that Unbiased $\neq$ Best prediction. There is always some room to shrink the estimator towards zero to get an even better predictor than an unbiased estimate. Why? Because we are reducing the variance of the model, and hence, we are increasing its accuracy. The simple example with heights is the case that illustrates it. Even if we do not have any other covariates (predictors), shrinking the estimated mean is still optimal. It becomes even more important when we add covariates (predictors), which may bring a lot of noise.
+
+Let's work now with one predictor. Suppose you want to predict $y$ from $x$, so you run the following regression:
+
+$$y_i  = \alpha + \beta x_{i} + \epsilon$$
+
+__Example 1:__ You get the following result
+
+
+|Parameter | Est. | S.E.|
+|---|---|---|
+|$\alpha$ | 0 | 0.01|
+|$\beta$ | 20 | 100|
+
+
+```{r quiz_shrinking, echo=FALSE}
+quiz(
+  question("Do you think it would be optimal to shrink 𝛽 to improve out-of-sample MSE?",
+    answer("Yes, shrinking it a bit"),
+    answer("Yes, shrinking it a lot, maybe even throwing away $x$ from predictors completely, i.e., put $\beta=0$", correct = TRUE),
+    answer("No shrinking")))
+```
+
+__Example 2:__ Suppose, alternatively, that the result is:
+
+|Parameter | Est. | S.E.|
+|---|---|---|
+|$\alpha$ | 0 | 0.01|
+|$\beta$ | 20 | 0.01|
+
+```{r quiz_shrinking2, echo=FALSE}
+quiz(
+  question("Do you think it would be optimal to shrink 𝛽 to improve out-of-sample MSE?",
+    answer("Yes, shrinking it a bit", correct = TRUE),
+    answer("Yes, shrinking it a lot, maybe even throwing away $x$ from predictors completely, i.e., put $\beta=0$"),
+    answer("No shrinking")))
+```
+
+__Answers explained:__ In the first example, $x$ is a junky predictor, it is not estimated precisely, so it probably adds too much variance to the prediction model. You might be better off by just throwing it away from the model. In the second example, $x$ brings a lot of precise signal about $y$, but we still shrink it a bit. Why? Because $\beta = 20$ is an unbiased estimator, and we know that we can improve the prediction accuracy of $y$ from $x$ by shrinking $\beta$ a bit towards zero.
+
+
+Finally, how can you implement the shrinkage routine in practice when you have $p$ predictors? $\Rightarrow$ By using __Ridge regession__:
+
+
+$$\min_{\beta}\underbrace{(y_i - \beta_0 - \sum_{j = 1}^p \beta_j x_{ij})^2}_{RSS} + \underbrace{\lambda \overbrace{\sum_{j=1}^p \beta^2_j}^{\text{(l2 norm)}^2}}_{\text{shrinkage penalty}}$$
+The first part of Ridge regression is just like OLS: it minimizes the in-sample sum of squared residuals (RSS).  But the second part of Ridge is the shrinkage penalty -- a new term. It penalizes the sum of squared coefficient. l2 norm is a square root of the sum of squared coefficients. Notice the parameter $\lambda$ -- the penalty parameter. 
+
+
+```{r quiz_ridge, echo=FALSE}
+quiz(
+  question("As you increase lambda -- the penalty parameter -- which of the following statements will be true?",
+    answer("The in-sample fit will improve, i.e., RSS will decrease"),
+    answer("The in-sample fit will decline, i.e., RSS will increase", correct = TRUE),
+    answer("l2 norm will decrease", correct = TRUE),
+    answer("l2 norm will increase")))
+```
+
+```{r quiz_ridge2, echo=FALSE}
+quiz(
+  question("If lambda = 0",
+    answer("The estimated coefficients will be exactly the same as in OLS regression", correct = TRUE),
+    answer("The estimated coefficients will be exactly zero"),
+    answer("The in-sample RSS is at its minimum", correct = TRUE),
+    answer("None of the above")))
+```
+
+
+```{r quiz_ridge3, echo=FALSE}
+quiz(
+  question("If lambda is very very large, i.e., approaches +∞",
+    answer("The estimated coefficients will be exactly the same as in OLS regression"),
+    answer("The estimated coefficients will be exactly zero", correct = TRUE),
+    answer("The in-sample RSS is at its minimum"),
+    answer("None of the above")))
+```
+
+The idea is to fit many different models at different levels of penalty paramter $\lambda$ and then choose the model that provides the lowest RSS in a new  (validation) sample. 
+
+
+
+
+> Did you know that Ridge regression is a special case of [Tikhonov regularization](https://en.wikipedia.org/wiki/Tikhonov_regularization)? But the use of Ridge regressions in statistics was introduced by [Hoerl and Kennard in 1970](https://amstat.tandfonline.com/doi/abs/10.1080/00401706.1970.10488634).
+
+
+```{r glmnet}
+library(glmnet)
+```
+
+We are going to use glmnet library to perform Ridge and Lasso regressions. It uses _coordinate descent_ ([Fu, 1998](https://www.tandfonline.com/doi/abs/10.1080/10618600.1998.10474784?casa_token=9FBhyBZudj0AAAAA:PfE4Ez9K7O2jpNx4T1-2c032MwuWgp22o_pRIxGX8PKvGtRnRZC99QveIvr8vACeOLFfeWOE5i0), Daubechies et al., 2004) to solve for parameters $\beta$ at a given penalty parameter $\lambda$. 
+
+What is _coordinate descent_? It is a numerical optimization process that solves the problem through multiple iterations by guessing solutions until convergence:
+
+1. First it guesses that the solution is zero for all coefficients: $\tilde{\beta}(\lambda) = 0$
+2. Then it updates the guess for coefficient $j$ by solving a partial univariate problem of finding  optimal $\beta_j$ while keeping all other coefficients constant at their previous guesses. This updates the guess for $\tilde{\beta_j}(\lambda)$.
+3. Repeat step 2 by cycling through different coefficients and updating guesses for those coefficients until the code converges (i.e.,  the new guesses are no longer different from old guesses for all coefficients.)
+
+> "How  does _coordinate descent_ work" was a real job interview question I got. So now you are also ready to answer it, if you get this question. 
+
+
+### Preparing data for regressions
+
+
+
+
+Let's create a grid with penalty parameters $\lambda$, ranging from as high as 10^10 to as small as 0.01.
+
+```{r grid}
+grid <- 10^seq(10, -2, length = 100)
+# The first element
+grid[1]
+# The last element 
+grid[100]
+```
+
+
+
+```{r, echo = FALSE}
+x <- model.matrix(Salary~.,Hitters_clean)[,-1] # -1 drops the intercept
+y <- Hitters_clean$Salary
+
+ridge_mod=glmnet(x,y,alpha=0,lambda=grid, standardize = TRUE)
+```
+
+### Exercise: Training Ridge at different sets of lambda
+We are going to use `glmnet()` function. 
+Unfortunately, `glmnet` function does not accept dataframes, but only data in a matrix form. To do so,  we use `model.matrix` function to convert a dataframe `Hitters_clean` into matrix `x` ready for Ridge regression.  It converts the factor variables (e.g., `League` into 1/0 dummy variables automatically.) Also, we save salaries in a separate vector `y`.
+
+Importantly, Ridge (and Lasso) regressions are not invariant to re-scaling. In OLS, you can multiply a predictor  by 100 (e.g., transfer meters into centimeters),  then the new estimated  parameter $\beta$ will drop by 100. This is not true for Ridge regressions. The scale of the predictors matter because of the shrinkage penalty. For example, you do not want to have one variable that is represented in tons on a scale from (0 to 0.01) and simulatenously have a variable that is on a scale from (1000 to 100000). Hence,  the common approach is to standardize all variables:
+
+$$
+  \tilde{x}_{ij} = \frac{x_{ij}}{\sqrt{\frac{1}{n}\sum_{i =1}^{n}(x_{ij} - \bar{x}_j)^2}}
+$$
+
+i.e., each predictor is centered around its own mean and the standard deviation is set to one. 
+
+`glmnet` function automatically standardizes the predictors $x$ for you by default (i.e., you do not  even need to specify `standardize= TRUE`, but I kept it in the formula so you do not forget that `glmnet` does the standardization under the hood). 
+
+
+Amend the code below to simultaneously fit 100 Ridge regressions (one per each parameter $\lambda$ in our `grid`). The first element in the glmnet function should point to the matrix of predictors. The second element is the target variable that we want to predict. Function `glmnet` from the package `glmnet` can run a Ridge regression (set `alpha = 0`) or a Lasso regression (set `alpha = 1`), or an Elastic Net regression (set `alpha = m`, where $0<m<1$).  Finally, `lambda` parameter can take the grid of lambda which you have just created.
+
+
+The  penultimate  line `str(ridge_mod)` will show the structure of the object `ridge_mod` that you train. The last line shows the dimensions of the estimated coefficients. 
+
+```{r ridge-model, exercise = TRUE, exercise.eval=FALSE}
+# Create the matrix of predictors. Ask to create a matrix, as if you are regressing Salary on all other variables in the dataset
+x <- model.matrix(_____ ~.,data = _______)[,-1] # [,-1] drops the first column, which is intercept
+# Create the vector with target variable
+y <- ________$_____
+
+# Train Ridge models at different lambdas (from the grid)
+ridge_mod <- glmnet(x = x, y = y, alpha=_, lambda=____, standardize = TRUE)
+
+# Look at the structure of the new object with the results of Ridge regressions
+str(ridge_mod)
+# Check the dimensions of the coefficients 
+dim(coef(ridge_mod))
+```
+
+
+```{r ridge-model-hint}
+# Create the matrix of predictors. Ask to create a matrix, as if you are regressing Salary on all other variables in the dataset
+x <- model.matrix(Salary~., data = Hitters_clean)[,-1] # [,-1] drops the first column, which is intercept
+# Create the vector with target variable
+y <- Hitters_clean$Salary
+
+# Train Ridge models at different lambdas (from the grid)
+ridge_mod <- glmnet(x = x,  y = y, alpha=0, lambda=grid, standardize = TRUE)
+
+# Look at the structure of the new object with the results of Ridge regressions
+str(ridge_mod)
+# Check the dimensions of the coefficients 
+dim(coef(ridge_mod))
+```
+
+As you can see coefficients of `ridge_mod` are a matrix of 20 rows (20 predictors) by 100 columns (100 lambdas). 
+
+### Exercise: zooming into results for the 50th lambda
+
+We have trained 100 different Ridge models. Why don't check what is going on for one specific model. Ask the code below to show the value of the 50th lambda, coefficients estimated for that lambda, l2 norm (remember that l2 norm does not include the intercept), and the sum of squared residuals (RSS).
+
+$$\min_{\beta}\underbrace{(y_i - \beta_0 - \sum_{j = 1}^p \beta_j x_{ij})^2}_{RSS} + \lambda \underbrace{\sum_{j=1}^p \beta^2_j}_{\text{(l2 norm)}^2}$$
+
+```{r ridge-50, exercise = TRUE, exercise.eval=FALSE}
+cat("The value of the 50th lambda in the grid is: ", ______$lambda[50])
+cat("\n The coefficients are: \n")
+coef(_______)[,__]
+cat("l2 norm is  ", sqrt(sum(coef(______)[-1,__]^2)))
+cat("\n The sum of squared residuals is : ",  sum((y - coef(______)[1, __] - (x %*% coef(______)[-1,__]))^2) )
+# ridge.mod$lambda[60]
+```
+
+```{r ridge-50-hint}
+cat("The value of the 50th lambda in the grid is: ", ridge_mod$lambda[50])
+cat("\n The coefficients are: \n")
+coef(ridge_mod)[,50]
+cat("l2 norm is  ", sqrt(sum(coef(ridge_mod)[-1,50]^2)))
+cat("\n The sum of squared residuals is : ",  sum((y - coef(ridge_mod)[1, 50] - (x %*% coef(ridge_mod)[-1,50]))^2) )
+
+# ridge.mod$lambda[60]
+```
+
+
+### Exercise: comparing results across different lambdas
+
+Now, let's visualize how the sum of squared residuals (the in-sample fit) and l2 norm (i.e., the sum of squared coefficients) change with $\lambda$. The first line already correctly estimates the l2 norm. See how I re-used the code from the above for l2 norm `sqrt(sum(coef(ridge_mod)[-1,50]^2))` and how I used function `map_dbl` from [purrr](https://purrr.tidyverse.org/) package) in order to loop that function over different columns of `coef(ridge_mod)[-1,.x]` matrix. Note that `.x` is a loop value. Since we pass a vector from 1 to 100 (`.x=c(1:100)`), the value of `.x` at the first iteration will be 1. And the value at the last iteration will be 100.  In other words, function `map_dbl` maps object `.x = c(1:100)` into a function that we specify after `~` and then it collects the results in a numeric vector of class `double`. Function `map_chr`, for example, returns a character vector, while `map_dfr` returns a dataframe. 
+
+Use the code from the example for the fiftieth lambda in order to estimate the vector of the sum of squared residuals `RSS` for different values of lambda. Then plot l2 norm and RSS to see that indeed l2 norm falls while RSS increases with lambda. Note that we transform the x-axis with a log transformation, otherwise we would not see anything on the plot due to extremely high values of lambda.
+
+```{r ridge-visualize, exercise = TRUE, exercise.eval=FALSE}
+# Calculate l2 norm for all lambdas in the grid
+l2 <- map_dbl(.x=c(1:100), ~sqrt(sum(coef(ridge_mod)[-1,.x]^2)))
+# Calculate RSS for all lambdas in the grid
+RSS <- map_dbl(.x= c(1:100), ~__________________________________)
+
+#Plot
+# create a dataframe that collects all necessary information for plotting
+data.frame(lambda_values = ____, 
+           l2 = l2,
+           RSS = RSS
+           ) %>% 
+  # Transform the dataset into a long format such that there will be just three columns: lambda_values, a character variable key which takes just two values "l2" or "RSS", and the numeric variable value which contains the value of that given key (l2 or RSS) for that given lambda 
+  gather(key = "key", value = "value", -lambda_values) %>% 
+  #Plot the values of l2 and RSS in a single plot against the values of lambda. To achieve this.  facet by the value of the variable called `key`
+  ggplot(aes(x = lambda_values, y = value)) + 
+  geom_point() + 
+  facet_grid(key ~ ., scales="free")  + 
+  scale_x_log10() 
+```
+
+```{r ridge-visualize-hint}
+# Calculate l2 norm for all lambdas in the grid
+l2 <- map_dbl(.x= c(1:100), ~sqrt(sum(coef(ridge_mod)[-1,.x]^2)))
+# Calculate RSS for all lambdas in the grid
+RSS <- map_dbl(.x= c(1:100), ~sum((y - coef(ridge_mod)[1, .x] - (x %*% coef(ridge_mod)[-1,.x]))^2) )
+
+#Plot
+# create a dataframe that collects all necessary information for plotting
+data.frame(lambda_values = grid, 
+           l2 = l2,
+           RSS = RSS
+           ) %>% 
+  # Transform the dataset into a long format such that there will be just three columns: lambda_values, a character variable key which takes just two values "l2" or "RSS", and the numeric variable value which contains the value of that given key (l2 or RSS) for that given lambda 
+  gather(key = "key", value = "value", -lambda_values) %>% 
+  #Plot the values of l2 and RSS in a single plot against the values of lambda. To achieve this.  facet by the value of the variable called `key`
+  ggplot(aes(x = lambda_values, y = value)) + 
+  geom_point() + 
+  facet_grid(key ~ ., scales="free")  + 
+  scale_x_log10() 
+  
+```
+
+> As you can see, RSS and l2 norm behave exactly as we expect them to behave with respect to $\lambda$. Which model at which $\lambda$ shall we choose for predictions? We cannot say, until we test the models using cross-validation.
+
+
+### Exercise: compare how the same coefficient changes at different lambda
+
+You can also check what happens to an individual coefficient once lambda increases. For example, what happens to the coefficient in front of `Years` of experience of the player? Plot that coefficient against the values of lambda.
+
+```{r plot-years-coef, exercise = TRUE, exercise.eval=FALSE}
+data.frame(lambda_values = _____, 
+           coefficient = coef(ridge_mod)["Years", ]) %>% 
+  ggplot( #finish the code
+
+
+```
+
+```{r plot-years-coef-hint}
+data.frame(lambda_values = grid, 
+           coefficient = coef(ridge_mod)["Years", ]) %>% 
+  ggplot(aes(x = lambda_values, y = coefficient)) + 
+  geom_point() + 
+  scale_x_log10() 
+
+
+```
+
+> Wow. Not only the coefficient in front of `Years` variable changes in magnitude, it also changes the sign at different values of the penalty parameter lambda. Notice how the coefficient slowly approaches zero at higher values of lambda, as we would expect.
+
+
+### Extrapolating results to the out-of-grid lambdas
+
+Note that we are not restricted to choose from just 100 lambdas that we put into our grid. We can ask the `ridge_mod` object that we trained also to produce the coefficients for a model at some new level of $\lambda$ somewhere in between the grid values. For example, in the code below, we ask to show us the predicted coefficients for lambda = 30, while the value of 30 is not one of the values we trained our model with.
+
+```{r extrapolate}
+cat("Is 50 one of the grid values? ", 30 %in% grid)
+
+cat("\n The coefficients for lambda = 30 are \n ")
+predict(ridge_mod, s=30, type="coefficients")
+
+```
+
+
+
+### Splitting the sample intro training and test sets
+
+In the video lecture on the prediction routine, I talked about 3 samples: training sample, validation sample, and test sample.
+
+Unfortunately, we do not have enough observations to waste the sample by splitting it in 3 equal parts. So, we are going to use a cross-validation routine instead.
+
+We split the sample by randomly assigning observations into a training and test samples.
+
+```{r split-data}
+set.seed(1)
+# Create an set of observations to include into the training sample
+train <- sample(1:nrow(x), nrow(x)/2)
+```
+
+```{r cv, echo = FALSE}
+set.seed(1)
+cv_out <- cv.glmnet(x = x[train,], y = y[train], alpha=0, standardize = TRUE, nfolds = 10)
+bestlam <- cv_out$lambda.min
+```
+
+
+### Exercise: cross-validation
+
+To perform cross-validation with just one line of code use function `cv.glmnet()`. Fill in the blanks in the code below. Make sure to feed the function the training sets for x and y. Specify that you want ridge regression by choosing the correct value for alpha. Ask to standardise the predictors and make a 10-fold cross-validation. Plot the results. And get lambda that minimizes the cross-validation error.
+
+
+
+```{r cross-validation, exercise = TRUE, exercise.eval=FALSE}
+set.seed(1)
+cv_out <- cv.glmnet(x = ______, y = ______, alpha=_, standardize = ____, nfolds = __)
+plot(cv_out)
+
+bestlam <- cv_out$lambda.min
+cat("The best lambda is : ", bestlam)
+```
+
+```{r cross-validation-hint}
+set.seed(1)
+cv_out <- cv.glmnet(x = x[train,], y = y[train], alpha=0, standardize = TRUE, nfolds = 10)
+plot(cv_out)
+
+bestlam <- cv_out$lambda.min
+cat("The best lambda is : ", bestlam)
+```
+
+
+The first vertical line indicates the value of log(lambda), where the expected MSE is minimized. 
+The numbers on top of the plot indicate the number of predictors with non-zero coefficients at each value of lambda. As you can see, Ridge regression has non-zero coefficients for all 19 predictors at any value of lambda, i.e., Ridge is shrinking the coefficients toward zero but never makes them exactly zero.
+
+As you can see, the MSE first slightly decreases but the increases as we make lambda higher. __Why is that so?__ __Does a higher $\lambda$ correspond to a more flexible or less flexible model?__
+
+```{r quiz_cvmse, echo=FALSE}
+quiz(
+  question("Based on the plot of MSE at different lambda, the following statements are true:",
+    answer("The most inaccurate model is the one where we allow only an intercept, and set all other coefficients to zero", correct = TRUE),
+    answer("The most inaccurate model is the one where we do not shrink coefficients at all, i.e., the pure OLS regression"),
+    answer("In general, the OLS regression and the Ridge regression at the best lambda are not that different in their accuracy, so we could have used an OLS instead", correct = TRUE),
+    answer("Predictors improve accuracy", correct = TRUE),
+    answer("None of the above")))
+```
+
+### Exercise: Test MSE of the best model
+
+Now since we know the value of the best lambda, we know our best model (out of those we trained), and we can check the expected prediction errors from that model on the test set.
+
+```{r test-errors, echo = FALSE}
+ridge_bestmod <- glmnet(x = x[train, ], y = y[train], alpha = 0, lambda =  bestlam, standardize= TRUE)
+ridge_pred <- predict(ridge_bestmod, s=bestlam, newx=x[-train,])
+errors <- (y[-train] - ridge_pred)
+```
+
+
+
+```{r get-errors, exercise = TRUE, exercise.eval=FALSE}
+ridge_bestmod <- glmnet(x = _____, y = _____, alpha = _, lambda =  _____, standardize = TRUE)
+ridge_pred <- predict(_____, s=____, newx=_______)
+errors <- (______ - ridge_pred)
+
+# Plot the errors
+data.frame(prediction_errors = errors) %>% 
+  ggplot(aes(x= prediction_errors)) + geom_density()
+
+```
+
+```{r get-errors-hint}
+ridge_bestmod <- glmnet(x = x[train, ], y = y[train], alpha = 0, lambda =  bestlam, standardize= TRUE)
+ridge_pred <- predict(ridge_bestmod, s=bestlam, newx=x[-train,])
+errors <- (y[-train] - ridge_pred)
+
+# Plot the errors
+data.frame(prediction_errors = errors) %>% 
+  ggplot(aes(x= prediction_errors)) + geom_density()
+
+```
+
+
+```{r estimate-mse}
+sqrtMSE <- sqrt(mean(errors^2))
+cat("The test sqrt of MSE is ", sqrtMSE)
+# out=glmnet(x,y,alpha=0)
+# predict(out,type="coefficients",s=bestlam)[1:20,]
+```
+
+
+So you find that the model that you trained and cross-validated on a training set has the $\sqrt{MSE}$ on the test sample of around `r sqrtMSE`. But what does it mean?
+
+
+```{r quiz_units, echo=FALSE}
+quiz(
+  question("In what units is MSE measured?",
+    answer("In percentage points"),
+    answer("In percentsD"),
+    answer("In USD", correct = TRUE),
+    answer("In utility units"),
+    answer("It means nothing, just a measure")))
+```
+
+```{r quiz_mse, echo=FALSE}
+quiz(
+  question("What does a square root of the test MSE shows in practice?",
+    answer("It is how far  the prediction is on average away from the truth"),
+    answer("It is the standard deviation of the prediction errors"),
+    answer("It is how spread the predictions are around the true values", correct = TRUE),
+    answer("It means nothing")))
+```
+
+Well, from the formula we remember that MSE is $\frac{1}{n}(\sum_{i=1}^n y_i - \hat{f}(x_i))^2$ for $i$ in the test set. So the square-root of MSE  literally captures the deviation  of the predictions around the true values. The first answer -- "It is how far  the prediction is on average away from the truth" -- is wrong as it refers to the bias, or  $\frac{1}{n}\sum_{i=1}^n y_i - \hat{f}(x_i)$. Notice the difference? In fact, we can calculate the bias by finding the average of prediction `errors` in the code below. And it is `r mean(errors)` USD, which is different from `r sqrtMSE` USD. The second answer -- "It is the standard deviation of the prediction errors" -- is wrong as it refers to the standard deviation of errors around its own mean. But we know that the predictions are biased, so they are not centered around zero (see the density plot of prediction errors above). By the way, the standard deviation of `errors` is `r sd(errors)` USD, which is different from the square-root of MSE (`r sqrtMSE` USD). So, the square-root of MSE is neither the bias of prediction errors, nor their deviation around their own mean, but it is a measure of how spread out the prediction errors are around zero.
+
+```{r mean-vs-sd-errors}
+cat("Prediction errors have mean ", mean(errors), " and standard deviation of ", sd(errors))
+```
+
+
+### Final step
+
+So, finally, you can train the chosen model on the full sample and use it to predict salaries on new data (in case you return back to 1987 and want to impress American baseball league with your skills to predict their salaries). Remember, that we already trained Ridge regressions at different lambdas on the full sample at the very beginning and we called that object `ridge_mod`. We just need to collect the coefficients of the ridge model that corresponds to the best lambda that we got at the cross-validation stage. 
+
+
+```{r final-ridge}
+predict(ridge_mod,type="coefficients",s=bestlam)
+```
+
+
+### An important after-thought
+
+So is the spread of `r sqrtMSE` USD of predictions around the true values a good or a bad sign? Is this model doing objectively well? If we compare to the standard deviation of salaries in the sample -- `r sd(Hitters_clean$Salary)` USD -- then we see that the model is actually improving a lot over a simple prediction model where you do not vary prediction at all, but just always predict the average of `r mean(Hitters_clean$Salary)` USD. 
+
+The question is: Could  you do better?
+
+Perhaps, there is still room for improvement when you are using Ridge regression. There are __at least two ways__ how you can tweak the Ridge model setup in the hope that it may produce smaller prediction errors. __Can you suggest any? Can you try whether those models would beat the initial model in cross-validation?__ (Note:  any model you actually choose should not be based on the test set, but should be chosen at the cross-validation step using only the training set! The test set is only for the winning model.)
+
+
+> When you do your own project for this course, do not forget to show that you tried your best to actually find the best model setup. Also giving the intuition. Then, explain how well your chosen prediction model behaves out-of-sample, and give the sense of the size.
+
+
+## Lasso 
+
+Now, let's turn to Lasso regression. 
+
+Lasso regression is similar to Ridge with the only difference that it penalizes the sum of the absolute values of coefficients:
+
+$$ \min_{\beta}\underbrace{(y_i - \beta_0 - \sum_{j = 1}^p \beta_j x_{ij})^2}_{RSS} + \underbrace{\lambda \sum_{j=1}^p|\beta_j|}_{\text{shrinkage penalty}}$$
+
+Because we penalize the __absolute value__ of $\beta$ coefficients, Lasso may give corner solutions  compared to Ridge (i.e., it may set  $\beta_j$ to be exactly zero for some $j$).  $\Rightarrow$ Lasso is used also as variable selection procedure. This is very useful in situations when number of predictors $p$ is larger than sample $n$. Can you even run an OLS when $p>n$? No! Can you run a Lasso regression? Yes!
+
+
+> Did you know that Lasso regression was introduced to statistics by Robert Tibshirani in 1996? He is also one of the authors of the ISLR textbook, which we use for the first two weeks of my part of the course. 
+
+
+Now, here is your time to exercise and repeat the steps you saw/made for Ridge tutorial, but now for Lasso. You can simply take the code for Ridge and change alpha = 1 in the `glmnet(..., alpha = 1, ...)` function. This is an excellent opportunity to revise all the steps of prediction modeling again in one go. Use the same `train`  and test sets we used for Ridge.
+
+
+```{r lasso, exercise = TRUE,  exercise.eval=FALSE}
+# Cross-validation stage. 
+cv_lasso <- _______________
+
+# Plot the cross-validation MSE. Save the best lambda which minimizes the expected MSE
+(... code here ...)
+
+# Estimate Lasso model at the best lambda. Save its predictions for salaries for the test set
+lasso_reg <- _______________
+lasso_pred <- _______________
+
+# Print the best lambda for Lasso. Compare the square-root of the MSE for the test sample using Lasso to the one obtained by Ridge.
+y_test <- y[-train]
+cat("Best lambda is ", _______, "\n")
+cat("the test √MSE for lasso regression is ", _______, "\n")
+cat("while the test √MSE for Ridge is ", _______)
+
+
+
+
+```
+
+
+```{r lasso-hint}
+# Cross-validation stage. Plot the cross-validation MSE. Save the best lambda which minimizes the expected MSE
+cv_lasso <- cv.glmnet(x[train,], y[train], alpha = 1, nfolds = 10)
+
+# Plot the cross-validation MSE. Save the best lambda which minimizes the expected MSE
+plot(cv_lasso)
+bestlam_lasso <- cv_lasso$lambda.min
+
+# Estimate Lasso model at the best lambda. Save its predictions for salaries for the test set
+lasso_reg <- glmnet(x[train, ], y[train], alpha = 1, lambda = bestlam, standardize = TRUE)
+lasso_pred <- predict(lasso_reg, s = bestlam, newx = x[-train, ])
+
+# Print the best lambda for Lasso. Compare the square-root of the MSE for the test sample using Lasso to the one obtained by Ridge.
+y_test <- y[-train]
+cat("Best lambda is ", bestlam_lasso, "\n")
+cat("the test √MSE for lasso regression is ", sqrt(mean((lasso_pred - y_test)^2)), "\n")
+cat("while the test √MSE for Ridge is ", sqrt(mean((ridge_pred - y_test)^2)))
+```
+
+Questions:
+
+1. How many predictors does Lasso use at best lambda (hint: look at the plot)?
+2. Does Lasso give better predictions than Ridge in this example?
+
+
+
