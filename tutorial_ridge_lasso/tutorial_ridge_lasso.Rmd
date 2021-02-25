@@ -6,8 +6,8 @@ output:
     progressive: true
     allow_skip: true
 tutorial:
-  id: "dse_mk.tutorial_ridge_lasso.v1"
-  version: 1
+  id: "dse_mk.tutorial_ridge_lasso.v2"
+  version: 2
 runtime: shiny_prerendered
 description: "Ridge and Lasso regressions"
 ---
@@ -16,7 +16,44 @@ description: "Ridge and Lasso regressions"
 
 This tutorial follows R lab #2 from Chapter 6 of [An Introduction to Statistical Learning by James, Witten, Hastie, and Tibshirani](http://faculty.marshall.usc.edu/gareth-james/ISL/Chapter%206%20Labs.txt). You can see the lab from ISLR translated to Python by Jordi Warmenhoven and N Jannasch [here](https://nbviewer.jupyter.org/github/JWarmenhoven/ISL-python/blob/master/Notebooks/Chapter%206.ipynb).
 
-```{r setup}
+```{r setup, echo =FALSE}
+
+# If you are running this tutorial on your own computer, first install all required packages by uncommenting the line below
+# install.packages(c("tidyverse", "learnr", "ISLR", "naniar", "glmnet"))
+library(learnr)
+library(tidyverse)
+library(glmnet)
+
+
+Hitters <- ISLR::Hitters
+Hitters_clean <- Hitters %>% 
+  filter(!is.na(Salary))
+
+
+grid <- 10^seq(10, -2, length = 100)
+
+x <- model.matrix(Salary~.,Hitters_clean)[,-1] # -1 drops the intercept
+y <- Hitters_clean$Salary
+
+ridge_mod=glmnet(x,y,alpha=0,lambda=grid, standardize = TRUE)
+
+set.seed(1)
+# Create an set of observations to include into the training sample
+train <- sample(1:nrow(x), nrow(x)/2)
+
+set.seed(1)
+cv_out <- cv.glmnet(x = x[train,], y = y[train], alpha=0, standardize = TRUE, nfolds = 10)
+bestlam <- cv_out$lambda.min
+
+ridge_bestmod <- glmnet(x = x[train, ], y = y[train], alpha = 0, lambda =  bestlam, standardize= TRUE)
+ridge_pred <- predict(ridge_bestmod, s=bestlam, newx=x[-train,])
+errors <- (y[-train] - ridge_pred)
+
+sqrtMSE <- sqrt(mean(errors^2))
+```
+
+
+```{r setup-public}
 
 # If you are running this tutorial on your own computer, first install all required packages by uncommenting the line below
 # install.packages(c("tidyverse", "learnr", "ISLR", "naniar", "glmnet"))
@@ -58,7 +95,7 @@ Hitters dataset's list of variables:
 
 
 
-```{r}
+```{r see-structure}
 Hitters %>% str()
 ```
 
@@ -327,12 +364,8 @@ grid[100]
 
 
 
-```{r, echo = FALSE}
-x <- model.matrix(Salary~.,Hitters_clean)[,-1] # -1 drops the intercept
-y <- Hitters_clean$Salary
 
-ridge_mod=glmnet(x,y,alpha=0,lambda=grid, standardize = TRUE)
-```
+
 
 ### Exercise: Training Ridge at different sets of lambda
 We are going to use `glmnet()` function. 
@@ -518,11 +551,6 @@ set.seed(1)
 train <- sample(1:nrow(x), nrow(x)/2)
 ```
 
-```{r cv, echo = FALSE}
-set.seed(1)
-cv_out <- cv.glmnet(x = x[train,], y = y[train], alpha=0, standardize = TRUE, nfolds = 10)
-bestlam <- cv_out$lambda.min
-```
 
 
 ### Exercise: cross-validation
@@ -569,12 +597,6 @@ quiz(
 
 Now since we know the value of the best lambda, we know our best model (out of those we trained), and we can check the expected prediction errors from that model on the test set.
 
-```{r test-errors, echo = FALSE}
-ridge_bestmod <- glmnet(x = x[train, ], y = y[train], alpha = 0, lambda =  bestlam, standardize= TRUE)
-ridge_pred <- predict(ridge_bestmod, s=bestlam, newx=x[-train,])
-errors <- (y[-train] - ridge_pred)
-```
-
 
 
 ```{r get-errors, exercise = TRUE, exercise.eval=FALSE}
@@ -582,8 +604,8 @@ ridge_bestmod <- glmnet(x = _____, y = _____, alpha = _, lambda =  _____, standa
 ridge_pred <- predict(_____, s=____, newx=_______)
 errors <- (______ - ridge_pred)
 
-# Plot the errors
-data.frame(prediction_errors = errors) %>% 
+# Plot the errors (We use as.numeric() command here, because the object `errors` is a named vector, which for some reason throws errors when we want to insert it inside a dataframe)
+data.frame(prediction_errors = as.numeric(errors)) %>% 
   ggplot(aes(x= prediction_errors)) + geom_density()
 
 ```
@@ -593,8 +615,8 @@ ridge_bestmod <- glmnet(x = x[train, ], y = y[train], alpha = 0, lambda =  bestl
 ridge_pred <- predict(ridge_bestmod, s=bestlam, newx=x[-train,])
 errors <- (y[-train] - ridge_pred)
 
-# Plot the errors
-data.frame(prediction_errors = errors) %>% 
+# Plot the errors (We use as.numeric() command here, because the object `errors` is a named vector, which for some reason throws errors when we want to insert it inside a dataframe)
+data.frame(prediction_errors = as.numeric(errors)) %>% 
   ggplot(aes(x= prediction_errors)) + geom_density()
 
 ```

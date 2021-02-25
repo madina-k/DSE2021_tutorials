@@ -6,7 +6,7 @@ output:
     progressive: true
     allow_skip: true
 tutorial:
-  id: "dse_mk.tutorial_trees"
+  id: "dse_mk.tutorial_trees.v1"
   version: 1
 runtime: shiny_prerendered
 description: "Decision trees and tree-based methods"
@@ -17,7 +17,94 @@ description: "Decision trees and tree-based methods"
 In this tutorial we will be working with a small sample from [COMPAS data](https://www.propublica.org/datastore/dataset/compas-recidivism-risk-score-data-and-analysis).  The dataset we are loading does not represent all the variables used by the original COMPAS software, but rather a stylized and cleaned version of it to learn in class. The dataset originally comes from package _fairness_. See the [documentation.](https://www.rdocumentation.org/packages/fairness/versions/1.0.1/topics/compas). I sampled 500 observations of only *Caucasian* or *African-American*  offenders.
 Our goal will be to predict recidivism using classification trees from `tree` package.
 
-```{r setup}
+```{r setup, echo=FALSE}
+# This is the setup code. It loads necessary libraries and the data from a csv file. Uncomment the line below in case you are running this tutorial on your own computer and you need to install those packages first.
+# install.packages(c("learnr", "tidyverse", "tree"))
+library(learnr)
+tutorial_options(exercise.timelimit=60*10)
+library(tidyverse)
+library(tree)
+library(randomForest)
+library(gbm)
+
+dataset <- read.csv("./data/compas_sample500.csv", stringsAsFactors = TRUE)
+
+set.seed(234)
+train <- sample(x = c(0, 1), size = 500, replace = TRUE, prob = c(0.5, 0.5))
+
+set.seed(345)
+tree_compas <- tree(Two_yr_Recidivism ~ . ,
+                    data = dataset[train == 1, ],
+                    split = "gini",
+                    minsize = 25,
+                    model = TRUE)
+set.seed(789)
+cv_compas <- cv.tree(tree_compas, FUN = prune.misclass, K = 10)
+
+best_n_leaves <- rev(cv_compas$size)[which.min(rev(cv_compas$dev))]
+
+# Pruning the tree
+prune_compas <- tree_compas %>% prune.misclass(., best = best_n_leaves)
+
+# Create predictions for the test observations
+set.seed(456)
+tree_predict <- predict(object = prune_compas, newdata = dataset[train==0, ], type = "class")
+
+
+test_y <- dataset$Two_yr_Recidivism[train==0]
+
+set.seed(333)
+bag_compas <- randomForest(Two_yr_Recidivism ~ ., 
+                           data = dataset[train == 1, ], 
+                           ntree = 1000,
+                           mtry = ncol(dataset) - 1,
+                           importance = TRUE)
+
+set.seed(123)
+bag_predict <- predict(object = bag_compas,
+                        newdata = dataset[train==0, ],
+                        type = "response")
+
+optimal_mtry <- floor(sqrt(6))
+
+set.seed(444)
+rf_compas <- randomForest(Two_yr_Recidivism ~ ., 
+                           data = dataset[train == 1, ], 
+                           ntree = 1000,
+                           mtry = optimal_mtry,
+                           importance = TRUE)
+
+rf_predict <- predict(object = rf_compas,
+                      newdata = dataset[train==0, ],
+                      type = "response")
+
+dataset_edited <- dataset %>% 
+  mutate(Two_yr_Recidivism = as.integer(Two_yr_Recidivism=="yes"))
+
+set.seed(555)
+
+boost_compas <- gbm(Two_yr_Recidivism ~ . , 
+                    data = dataset_edited[train==1, ], 
+                    shrinkage=0.01,
+                    bag.fraction = 0.5,
+                    distribution = "bernoulli", 
+                    n.trees = 1000, 
+                    interaction.depth = 2,
+                    cv.folds = 2,
+                    n.cores=1) 
+
+best_ntrees_boost <- gbm.perf(boost_compas, method="cv", plot.it = FALSE)
+
+set.seed(555)
+boost_predict_num <- predict(object = boost_compas,
+                         newdata = dataset[train==0, ],
+                         n.trees = best_ntrees_boost) 
+
+boost_predict <- ifelse(boost_predict_num > 0, "yes", "no") %>%
+  as.factor()
+```
+
+```{r setup-public}
 # This is the setup code. It loads necessary libraries and the data from a csv file. Uncomment the line below in case you are running this tutorial on your own computer and you need to install those packages first.
 # install.packages(c("learnr", "tidyverse", "tree"))
 library(learnr)
@@ -29,6 +116,8 @@ dataset <- read.csv("./data/compas_sample500.csv", stringsAsFactors = TRUE)
 
 
 You can inspect the dataset with any of the following commands:
+  
+  
 ```{r inspect, exercise = TRUE}
 # dataset %>% names()
 # dataset %>% head()
@@ -40,7 +129,6 @@ dataset %>% str()
 **COMPAS variables:**
 
 - **Two_yr_Recidivism:** factor, yes/no for recidivism or no recidivism. This is the outcome or target in this dataset
-- **Number_of_Priors:** numeric, number of priors, normalized to mean = 0 and standard deviation = 1
 - **Age_Above_FourtyFive:** factor, yes/no for age above 45 years or not
 - **Age_Below_TwentyFive:** factor, yes/no for age below 25 years or not
 - **Female:** factor, female/male for gender
@@ -147,12 +235,6 @@ Amend the code above to  make a density plot of the *number of priors* colored b
 
 
 
-```{r other, echo = FALSE}
-set.seed(234)
-train <- sample(x = c(0, 1), size = 500, replace = TRUE, prob = c(0.5, 0.5))
-```
-
-
 
 ## Classification tree
 
@@ -197,7 +279,7 @@ sum(train==1)
 sum(train==1) + sum(train==0)
 ```
 
-```{r quiz_trainingsize}
+```{r quiz_trainingsize, echo=FALSE}
 quiz(
   question("How many observations are assigned to the training set?",
     answer("247"),
@@ -223,16 +305,6 @@ We train the classification tree using *Gini index* as objective criteria: `spli
 
 **Finish the code below** by putting the correct formula and don't forget to use only the training set. At the end, ask the summary of the classification tree you have just trained.
 
-```{r tree_train_bg, echo=FALSE}
-set.seed(345)
-tree_compas <- tree(Two_yr_Recidivism ~ . ,
-                    data = dataset[train == 1, ],
-                    split = "gini",
-                    minsize = 25,
-                    model = TRUE)
-
-
-```
 
 ```{r tree_train, exercise = TRUE, exercise.eval=FALSE}
 set.seed(345)
@@ -296,7 +368,7 @@ quiz(
 
 Remember that the very first split  of a decision tree usually indicates the most important predictor for Y. In the end, the very first split finds the variable that helps the most in minimizing RSS.
 
-```{r quiz_whichvarimportant}
+```{r quiz_whichvarimportant, echo=FALSE}
 quiz(
   question("Which variable is the most important in predicting recidivism?",
     answer("number of priors", correct = TRUE),
@@ -307,7 +379,7 @@ quiz(
 )
 ```
 
-```{r quiz_predict}
+```{r quiz_predict, echo=FALSE}
 quiz(
   question("A female offender with the number of priors equal 0.2 and aged above 45 is predicted to",
     answer("Recidivate", correct = TRUE),
@@ -322,11 +394,6 @@ quiz(
 
 Now let's apply some pruning to our big tree.
 
-```{r pruning-bg, echo = FALSE}
-set.seed(789)
-cv_compas <- cv.tree(tree_compas, FUN = prune.misclass, K = 10)
-
-```
 
 **Fix the code below** by feeding `tree_compas` to the `cv.tree()` function for a 10-fold cross-validation
 
@@ -357,7 +424,7 @@ tibble(size = cv_compas$size, n_misclassified = cv_compas$dev) %>%
 
 Hence, let's actually prune our main tree using `prune.misclass()` function on `tree_compas`, where
 
-```{r pruning_main_tree, echo = TRUE}
+```{r pruning_main_tree, exercise = TRUE}
 best_n_leaves <- rev(cv_compas$size)[which.min(rev(cv_compas$dev))]
 
 cat("The lowest classification error is achieved already at ", best_n_leaves, " leaves\n")
@@ -381,7 +448,7 @@ text(prune_compas, pretty = 0)
 
 Ah! Much better!
 
-```{r quiz_pruned}
+```{r quiz_pruned, echo=FALSE}
 quiz(
   question("Compared to the unpruned tree, the pruned tree:",
            answer("lost most of its left branches", correct = TRUE),
@@ -418,11 +485,6 @@ prunedtree_predict[1:10]
 ```
 
 
-```{r pruned_error-bg, echo=FALSE}
-set.seed(456)
-tree_predict <- predict(object = prune_compas, newdata = dataset[train==0, ], type = "class")
-```
-
 
 
 ### Misclassification errors and fairness
@@ -432,7 +494,7 @@ Let's properly generate the confusion matrix for the test data (i.e., a matrix t
 
 The code counts the  number of observations within the interacted values of `Two_yr_Recidivism` (the truth) and `tree_predict` (the prediction). Then, it spreads the result using the values of `tree_predict` as column names and `n` as values that populate the columns.
 
-```{r confusion_matrix, echo=TRUE}
+```{r confusion_matrix, exercise=TRUE}
 # For convenience, store the outcomes of the test sample in a separate vector
 test_y <- dataset$Two_yr_Recidivism[train==0]
 
@@ -443,7 +505,7 @@ data.frame(Two_yr_Recidivism = test_y,
   spread(tree_predict, n, sep = "_")
 ```
 
-```{r quiz_nrecidmisclass}
+```{r quiz_nrecidmisclass, echo=FALSE}
 quiz(
   question("How many offenders were predicted to not recidivate while in fact they did recidivate?",
     answer("73"),
@@ -614,7 +676,7 @@ quiz(
 
 Do you remember what is the difference between bagging trees and random forest (from the video lecture)?
 
-```{r quiz_bagvsrf}
+```{r quiz_bagvsrf, echo=FALSE}
 quiz(
   question("What is the difference between bagging trees and Random Forest (RF)?",
     answer("Bagging grows many decision trees, while RF grows just one big tree testing only a random subset of predictors at each potential split"),
@@ -659,15 +721,7 @@ bag_compas <- randomForest(Two_yr_Recidivism ~ .,
 summary(bag_compas) # Shows you the objects that are included in the object
 ```
 
-```{r bagging-bg, echo = FALSE}
-set.seed(333)
-bag_compas <- randomForest(Two_yr_Recidivism ~ ., 
-                           data = dataset[train == 1, ], 
-                           ntree = 1000,
-                           mtry = ncol(dataset) - 1,
-                           importance = TRUE)
 
-```
 
 ### Exercise -- Importance of predictors
 
@@ -687,7 +741,7 @@ The first measure "MeanDecreaseAccuracy" is computed using out-of-bag data (see 
 
 The second measure "MeanDecreaseGini" is the total decrease in node impurities from splitting on the variable, averaged over all trees. ("For classification, the node impurity is measured by the Gini index. For regression, it is measured by residual sum of squares.") 
 
-```{r quiz_bagimportance}
+```{r quiz_bagimportance, echo=FALSE}
 quiz(
   question("According to the results of the bagging procedure on COMPAS dataset, we learn that:",
     answer("According to both measures -- out-of-bag accuracy and node purity -- number of priors is the most important predictor of recidivism", correct = TRUE),
@@ -699,11 +753,20 @@ quiz(
 ```
 
 
+Let's save the bagging model predictions:
+
+```{r bag-predict, exercise=TRUE}
+set.seed(123)
+bag_predict <- predict(object = bag_compas,
+                        newdata = dataset[train==0, ],
+                        type = "response")
+```
+
 
 
 ### Random Forest
 
-```{r quiz_rf}
+```{r quiz_rf, echo=FALSE}
 quiz(
   question("Random Forest randomly subsets m predictors to try at each split. What is a typical choice of m?",
     answer("m = 3"),
@@ -713,7 +776,7 @@ quiz(
 )
 ```
 
-Now you are ready to grow a Random Forest. Please use a typical choice of m and `ntree= 1000`. 
+Now you are ready to grow a Random Forest. Please use a typical choice of m and `ntree= 1000`. Save the predictions.
 
 ```{r rf, exercise=TRUE, exercise.eval=FALSE,  exercise.timelimit = 360,  exercise.lines = 15}
 optimal_mtry <- floor(sqrt(6))
@@ -722,7 +785,7 @@ cat("The optimal choice of m is ", optimal_mtry, "\n")
 set.seed(444)
 rf_compas <- randomForest(#put code)
 
-
+rf_predict <- predict(#put code)
 ```
 
 ```{r rf-hint}
@@ -736,20 +799,10 @@ rf_compas <- randomForest(Two_yr_Recidivism ~ .,
                            mtry = optimal_mtry,
                            importance = TRUE)
 
-
+rf_predict <- predict(object = rf_compas,
+                      newdata = dataset[train==0, ],
+                      type = "response")
 ```
-
-```{r rf-bg, echo = FALSE}
-optimal_mtry <- floor(sqrt(6))
-
-set.seed(444)
-rf_compas <- randomForest(Two_yr_Recidivism ~ ., 
-                           data = dataset[train == 1, ], 
-                           ntree = 1000,
-                           mtry = optimal_mtry,
-                           importance = TRUE)
-```
-
 
 Check importance of variables for the random forest `rf_compas`. Has anything changed in comparison to the bagging procedure results?
 
@@ -787,13 +840,14 @@ To do so, we create a separate dataframe called `dataset_edited` in which we mut
 
 
 ```{r editeddata, echo = TRUE}
+
 dataset_edited <- dataset %>% 
-  mutate(Two_yr_Recidivism = as.numeric(Two_yr_Recidivism == "yes"))
+  mutate(Two_yr_Recidivism = as.integer(Two_yr_Recidivism=="yes"))
 
 ```
 
 
-### Exercise -- Boosting
+###  Boosting
 
 Boosting comes with much more parameters to choose than any previous tree-based models:
 
@@ -804,9 +858,10 @@ Boosting comes with much more parameters to choose than any previous tree-based 
 * `cv.folds` -- specifies number of cross-validation folds to perform. Remember, that unlike in random forest, higher number of trees in boosting may  lead to **overfitting**. Hence, we need to search for the optimal number of trees to grow through cross-validation.
 
 
+
 You can see the relative importance of predictors using `summary` function.
 
-*Fill in the blanks in the code below*  to train boosted trees to predict `Two_yr_Recidivism` using the `dataset_edited`. Shrink at 0.01, allow to select only a half of the sample randomly to grow each new tree, where each tree has depth one. Grow 1000 trees but ask to do 2-fold cross validation.  Since our target  variable takes only values of 0 and 1, use Bernoulli distribution.
+*Fill in the blanks in the code below*  to train boosted trees to predict `Two_yr_Recidivism` using the `dataset_edited`. Shrink at 0.01, allow to select only a half of the sample randomly to grow each new tree, where each tree has at max depth two. Grow 1000 trees but ask to do 2-fold cross validation.  Since our target  variable takes only values of 0 and 1, use Bernoulli distribution.
 
 
 ```{r boost, exercise=TRUE, exercise.eval=FALSE, exercise.timelimit = 360}
@@ -819,8 +874,9 @@ boost_compas <- gbm(_______ ~ . ,
                     distribution = "_______", 
                     n.trees = _____, 
                     interaction.depth = _,
-                    cv.folds = _)
-summary(_____)
+                    cv.folds = _,
+                    n.cores=1) # Not setting n.cores  parameter leads to mistakes
+summary(_____) # Gives variable importance
 ```
 
 
@@ -832,16 +888,18 @@ boost_compas <- gbm(Two_yr_Recidivism ~ . ,
                     shrinkage=0.01,
                     bag.fraction = 0.5,
                     distribution = "bernoulli", 
-                    n.trees = 500, 
-                    interaction.depth = 1,
-                    cv.folds = 2)
-summary(boost_compas)
+                    n.trees = 1000, 
+                    interaction.depth = 2,
+                    cv.folds = 2,
+                    n.cores=1) # Not setting n.cores parameter leads to mistakes
+summary(boost_compas) # Gives variable importance
 ```
 
 
 
 
-### Exercise -- find optimal number of trees for boosting
+
+### Find optimal number of trees for boosting
 
 The next step of boosting procedure is to retrieve the number of trees that minimize the expected errors. You can access it using `gbm.perf()` function, and it even gives you a nice plot of training and validation errors.
 
@@ -855,9 +913,10 @@ best_ntrees_boost <- gbm.perf(boost_compas, method="cv", plot.it = TRUE)
 ```
 
 
+
 In the graph, black line plots the (in-sample) training errors as a function of number of trees, while the green line plots the (out-of-sample) validation errors. 
 
-```{r quiz_cvboost}
+```{r quiz_cvboost, echo=FALSE}
 quiz(
   question("From the plot you can see that:",
     answer("The in-sample fit always improves with the number of trees", correct = TRUE),
@@ -869,47 +928,33 @@ quiz(
 )
 ```
 
-In general, we see the Bias-Variance trade-off again and again, in every single prediction task.
+In general, we see the manifistation of the Bias-Variance trade-off again and again, in every single prediction task.
+
+Let's run the boosting model with the optimal number of trees, and make predictions.
+
+```{r best-boosting, exercise=TRUE}
+set.seed(555)
+
+boost_predict_num <- predict(object = boost_compas,
+                         newdata = dataset[train==0, ],
+                         n.trees = best_ntrees_boost) 
+```
 
 
-## Test errors across models
+
+## Accuracy of different models 
 
 Finally, it is time to put all of the tree-based models in one row and compare their performance.
 
-Let's generate predictions for every method -- pruned tree, bagging, random forest, boosting -- using the test data which we haven't touched so far. 
+We generate predictions for every method -- `tree_predict` for pruned tree, `bag_predict` for  bagging, `rf_predict` for random forest, `boost_predict` for boosting -- using the test data. 
 
-Note that the predict function for boosting returns back numerical values. We have to convert those predictions again back to a categorical variables by using a logical evaluation whether the predicted value is higher than zero. If it is, then the boosting algorithm predicts that the offender will recidivate. Then, we convert the logical vector into an initial coding of "yes" and "no" values of `Two_yr_Recidivism`.
+Note that the predict function for boosting returned back numerical values. We have to convert those predictions again back to a categorical variables by using a logical evaluation whether the predicted value is higher than zero. If it is, then the boosting algorithm predicts that the offender will recidivate. Then, we convert the logical vector into an initial coding of "yes" and "no" values of `Two_yr_Recidivism`.
 
 
-```{r test, echo = TRUE}
-set.seed(666)
-
-prunedtree_predict <- predict(object = prune_compas,
-                        newdata = dataset[train==0, ],
-                        type = "class")
-str(prunedtree_predict)
-
-bag_predict <- predict(object = bag_compas,
-                        newdata = dataset[train==0, ],
-                        type = "response")
-str(bag_predict)
-
-rf_predict <- predict(object = rf_compas,
-                      newdata = dataset[train==0, ],
-                      type = "response")
-
-boost_predict <- predict(object = boost_compas,
-                         newdata = dataset[train==0, ],
-                         n.trees = best_ntrees_boost) 
-str(boost_predict)
-
-# Convert predictions by boosting from numerical value into a logical vector
-boost_predict <- boost_predict > 0
-
-str(boost_predict)
+```{r boost-predict-convert, exercise = TRUE}
 
 # Convert predictions by boosting from a logical vector into a factor of "yes/no" 
-boost_predict <- ifelse(boost_predict == TRUE, "yes", "no") %>%
+boost_predict <- ifelse(boost_predict_num > 0, "yes", "no") %>%
   as.factor()
 
 str(boost_predict)
@@ -917,48 +962,45 @@ str(boost_predict)
 ```
 
 
-### Exercise -- compute the classification errors for different models
+### Exercise -- compute the accuracy rate for different models
 
-We want to compare the classification errors of our models in the test data. The code below is one way to do it. We start by keeping only test observations in our dataset. Then we create a column in the dataset for each model in which we store the logical values of whether its predictions were INCORRECT. Finally, we select columns with errors and get their sum.
+We want to compare the classification errors of our models in the test data. The code below is one way to do it. We creating a dataframe where we store the logical values of whether the model's predictions were CORRECT. Finally, we summarize the accuracy for each model by asking to give the mean of each column.
 
 *Complete the code below*
 
 ```{r compare, exercise=TRUE, exercise.eval=FALSE}
 
-dataset %>% filter(train==_) %>%
-  mutate(
-    error_prunedtree = ______ != Two_yr_Recidivism,
-    error_bag        = ______ != Two_yr_Recidivism,
-    error_rf         = ______ != Two_yr_Recidivism,
-    error_boost      = ______ != Two_yr_Recidivism
+data.frame(
+    acc_prunedtree = ______ == test_y,
+    acc_bag        = ______ == test_y,
+    acc_rf         = ______ == test_y,
+    acc_boost      = ______ == test_y
   ) %>%
-  select(______, ______, ______, ______) %>%
   summarise_all(___)
 
 ```
 
 ```{r compare-hint}
 
-dataset %>% filter(train == 0) %>%
-  mutate(
-    error_prunedtree = prunedtree_predict != Two_yr_Recidivism,
-    error_bag        = bag_predict!= Two_yr_Recidivism,
-    error_rf         = rf_predict!= Two_yr_Recidivism,
-    error_boost      = boost_predict!= Two_yr_Recidivism
+data.frame(
+    acc_prunedtree = tree_predict == test_y,
+    acc_bag        = bag_predict  == test_y,
+    acc_rf         = rf_predict   == test_y,
+    acc_boost      = boost_predict== test_y
   ) %>%
-  select(error_prunedtree, error_bag, error_rf, error_boost) %>%
-  summarise_all(sum)
+  summarise_all(mean)
 
 ```
 
 Note that you can always modify the code above to see how the classification rates differ by groups of offenders (using `group_by()` functionality of `dplyr` package).
 
-```{r quiz_compare}
+```{r quiz_compare, echo=FALSE}
 quiz(
-  question("According to the table of test errors:",
+  question("According to the table:",
     answer("The worst performing model is boosting"),
     answer("The worst performing model is bagging", correct = TRUE),
-    answer("The best performing models are random forest and boosting", correct = TRUE)
+    answer("The best performing model  is boosting", correct = TRUE),
+    answer("The best performing model  is random forest")
   )
 )
 ```
