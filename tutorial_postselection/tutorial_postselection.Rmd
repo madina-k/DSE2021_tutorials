@@ -386,7 +386,9 @@ quiz(
 Hooray! `d` is among the variables selected by Lasso to predict `y`. That's already a good start.
 However, Lasso estimates the effect of `d` on `y` at `r Lasso_coefficients$est[Lasso_coefficients$coef_names=="d"]`, but we know that the true effect is 1. So, Lasso grossly overestimates the effect.
 
-Wait a second! We know that Lasso  puts bias in the  coefficients on purpose in order to obtain the lowest out-of-sample MSE. No wonder that the estimator is biased. What if we run a proper OLS but with the variables selected by Lasso? This approach is called *post-selection inference*.
+Wait a second! We know that Lasso  puts bias in the  coefficients on purpose in order to obtain the lowest out-of-sample MSE. No wonder that the estimator is biased. What if we run a proper OLS but with the variables selected by Lasso? This approach is called *post-Lasso estimator*.
+
+> Post-Lasso estimator is an OLS estimator, but the  variables that are included in that OLS have been selected earlier using Lasso. Post-Lasso estimator was introduced by Belloni and Chernozhukov (2013).
 
 **Fill in blanks in the code below.** Run an OLS with `y` as dependent variable, and `d` + all other  variables that have been selected by Lasso (i.e., Lasso_coefficients):
 
@@ -447,7 +449,7 @@ quiz(
 
 Haha, I know you feel a bit disappointed that the estimate is not equal to one.  As you can see from the table above, the estimate is wrong, but the standard errors are huge as well. In fact we cannot reject the null hypothesis that the true effect is equal to one. We cannot even reject the null hypothesis that the true effect is equal to zero. After all, this is an OLS on 100 observations, things can be quite imprecise.  But hey, this OLS is at least not lying to us in the way post-selection procedure did (that the effect is precisely equal to something else than one).
 
-So why did post-selection procedure lied to us so blatantly?
+So why did post-Lasso procedure lied to us so blatantly?
 
 To answer this question you should revisit the variables that Lasso selected.
 
@@ -635,7 +637,7 @@ results_true %>% summarise(mean(estimate), sd(estimate))
 
 
 
-### Run naive post-selection estimator one-hundred times
+### Run naive post-Lasso estimator one-hundred times
 
 Now, let's check the distribution of coefficients in front of `d` using naive post-Lasso on those 100 different samples by applying the naive post-Lasso for each sample.
 
@@ -703,7 +705,7 @@ As you can see, the distribution of estimates is centered around two numbers: it
 2) Lasso selects the controls that best predict `y`, but does not care about `d` and omitted-variable bias problem.
 
 What can we do to use Lasso for inference? Short answer: Double Selection selection procedure.
-In order to understand the Double Selection approach for inference, we first need to take another look at the OLS, and in particular at its partialling-out properties.
+In order to understand the Double Selection or Partialling-out via Post-Lasso approaches for inference, we first need to take another look at the OLS, and in particular at its partialling-out properties.
 
 ## Partialling-out estimator
 
@@ -770,7 +772,7 @@ lm(y_no_z ~ d_no_z) %>% tidy()
 ```
 
 
-## Double Selection procedure
+## Double Selection or Partialling-out via Post-Lasso procedure
 
 So, the coefficient in front of `d` in the regression `lm(y ~ d + z)` captures any residual co-movement between `y` and `d` that cannot be explained by the co-movement of `y` with `z` and `d` with `z`.
 
@@ -815,7 +817,7 @@ quiz(
 ```
 
 
-### Double Selection (cross-validation) Step-by-Step
+### Partialling-out via Post-Lasso (cross-validation) Step-by-Step
 
 Thanks to the partialling-out interpretation of OLS we can always decompose any inference problem into **two** multivariate prediction tasks and **one** univariate inference problem. Importantly, perhaps, now we can use the prediction tools for Step 1 and Step 2, while the inference problem at the end of the procedure is now super simple.
 
@@ -825,6 +827,7 @@ Let's find out.
 
 Let's return back to our `dataset` which we used at the beginning of this tutorial. We will run TWO selection regressions: one for `y` and another for `d`.
 
+> For conciseness purposes, I will call the partialling-out via Post-Lasso estimator as post-Double-Selection estimator. Although the two are similar in nature, there is a slight difference between the two. I explain the difference in the video lecture. 
 
 **Transform the code below** to implement the double selection procedure with cross-validation. Since the task is repetitive for Step 1 and Step 2, create a function that implements that step.
 
@@ -909,9 +912,9 @@ lm(resid_y ~ resid_d) %>%  tidy()
 ```
 
 
-The double selection procedure seems to have worked exceptionally well, as the estimate is really close to the true treatment effect of 1. (Note: 9.837100e-01 is in fact 0.9837). But maybe this is just luck. Let's see how the estimates are distributed when we repeat this procedure on the 100 simulated samples from the same data-generating process.
+The double selection procedure seems to have worked exceptionally well, as the estimate is really close to the true treatment effect of 1. (Note: 9.837100e-01 = 0.9837). But maybe this is just luck. Let's see how the estimates are distributed when we repeat this procedure on the 100 simulated samples from the same data-generating process.
 
-### The distribution of the cross-validated DS-estimator
+### The distribution of the partialling-out via cross-validated Post-Lasso  estimator 
 
 This time instead of the `map_dfr()` function, let's use an old good  `for` loop to cycle through  the samples stored in the data column of  `simulated100nested` dataset. This is just for educational purposes, so that you know both approaches.
 

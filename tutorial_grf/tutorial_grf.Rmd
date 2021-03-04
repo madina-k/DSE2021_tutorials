@@ -1,0 +1,930 @@
+---
+title: "Tutorial Generalized Random Forest DSE 2020 Tilburg"
+author: Madina Kurmangaliyeva
+output: 
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+tutorial:
+  id: "dse_mk.causal_trees"
+  version: 1
+runtime: shiny_prerendered
+description: "Generalized Random Forest"
+---
+  
+```{r setup, include=FALSE}
+library(learnr)
+library(DiagrammeR)
+library(grf)
+library(tidyverse)
+library(broom)
+
+
+
+# getting COMPAS data
+
+set.seed(111)
+dataset <- fairness::compas %>% 
+  filter(ethnicity == c("Caucasian", "African_American")) %>%
+  mutate(ethnicity = as.factor(as.character(ethnicity))) %>%
+  mutate(Number_of_Priors = Number_of_Priors - min(Number_of_Priors)) %>% 
+  select(-probability,-predicted, -Two_yr_Recidivism) %>%
+  sample_n(1000)
+
+# Simulating data
+set.seed(112)
+dataset <- dataset %>% mutate(
+  jobhelp = sample(c(0,1), 1000, replace = TRUE, prob = c(0.5, 0.5)),
+  )
+
+ 
+
+datamat <- dataset %>%  model.matrix(~., .) %>% as.data.frame() %>% 
+  select(-`(Intercept)`) %>% 
+  mutate(
+    has_priors = if_else(Number_of_Priors > 0, 1, 0),
+    wage_nohelp = (-0.15)*has_priors + 
+            (-0.1)*Age_Above_FourtyFiveyes + (-0.1)*Age_Below_TwentyFiveyes  +
+            0.1*ethnicityCaucasian + 
+            (-0.05)*has_priors*ethnicityCaucasian +
+            rlnorm(1000, meanlog = 0, sdlog = 0.1),
+    help_effect = 0.1*Number_of_Priors,
+    wage = wage_nohelp + help_effect*jobhelp
+    )
+
+# ggplot(aes(x = wage, color = as.factor(jobhelp)), data = datamat) + geom_density()
+# ggplot(aes(x = Number_of_Priors, y = help_effect), data = datamat) + geom_point()
+
+dataset <- dataset %>% 
+  mutate(wage = datamat$wage)
+
+# Simulating non-ranodm assignment of treatment
+set.seed(123)
+
+datamat2 <- dataset %>%  model.matrix(~., .) %>% as.data.frame() %>% 
+  select(-`(Intercept)`) %>% 
+  mutate(
+    has_priors = if_else(Number_of_Priors > 0, 1, 0),
+    prob_treatment =  0.5 + 0.3*ethnicityCaucasian + (-0.05)*has_priors*ethnicityCaucasian + (-0.1)*Age_Above_FourtyFiveyes - 0.05*Number_of_Priors -  0.05*Number_of_Priors*ethnicityCaucasian + 0.1*Age_Above_FourtyFiveyes*Number_of_Priors,
+    wage_nohelp = (-0.15)*has_priors + 
+            (-0.1)*Age_Above_FourtyFiveyes + (-0.1)*Age_Below_TwentyFiveyes  +
+            0.1*ethnicityCaucasian + 
+            (-0.05)*has_priors*ethnicityCaucasian +
+            rlnorm(1000, meanlog = 0, sdlog = 0.1),
+    help_effect = 0.1*Number_of_Priors
+    )
+
+jobhelp_new <- map_dbl(datamat2$prob_treatment, ~sample(c(0,1), 1, replace = TRUE, prob = c(1-.x, .x)))
+
+dataset2 <- dataset %>% mutate(
+  jobhelp = jobhelp_new,
+  wage = datamat2$wage_nohelp + jobhelp_new*datamat2$help_effect
+  )
+
+# Simulating non-ranodm assignment of treatment without CIA
+set.seed(456)
+
+datamat3 <- dataset %>%  model.matrix(~., .) %>% as.data.frame() %>% 
+  select(-`(Intercept)`) %>% 
+  mutate(
+    has_priors = if_else(Number_of_Priors > 0, 1, 0),
+    wage_nohelp = (-0.15)*has_priors + 
+            (-0.1)*Age_Above_FourtyFiveyes + (-0.1)*Age_Below_TwentyFiveyes  +
+            0.1*ethnicityCaucasian + 
+            (-0.05)*has_priors*ethnicityCaucasian +
+            rlnorm(1000, meanlog = 0, sdlog = 0.1),
+    help_effect = 0.1*Number_of_Priors
+    )
+prob_treatment3 <- (datamat3$wage_nohelp-min(datamat3$wage_nohelp))/max(datamat3$wage_nohelp)
+
+jobhelp_new3 <- map_dbl(prob_treatment3, ~sample(c(0,1), 1, replace = TRUE, prob = c(1-.x, .x)))
+
+dataset3 <- dataset %>% mutate(
+  jobhelp = jobhelp_new3,
+  wage = datamat3$wage_nohelp + jobhelp_new3*datamat3$help_effect
+  )
+
+
+X <- dataset %>%  select(-wage, -jobhelp) %>%  
+  model.matrix(~., .) 
+X2 <- dataset2 %>%  select(-wage, -jobhelp) %>%  
+  model.matrix(~., .) 
+X <- X[ , -1]
+X2 <- X2[ , -1]
+Y <- dataset$wage
+W <- dataset$jobhelp
+
+set.seed(234)
+cforest <- causal_forest(
+  X,
+  Y,
+  W,
+  num.trees = 4000,
+  sample.weights = NULL,
+  clusters = NULL,
+  equalize.cluster.weights = FALSE,
+  sample.fraction = 0.5,
+  mtry = min(ceiling(sqrt(ncol(X)) + 20), ncol(X)),
+  min.node.size = 10,
+  honesty = TRUE,
+  honesty.fraction = 0.5,
+  honesty.prune.leaves = TRUE,
+  alpha = 0.05,
+  imbalance.penalty = 0,
+  stabilize.splits = TRUE,
+  ci.group.size = 2,
+  tune.parameters = "none",
+  compute.oob.predictions = TRUE
+)
+
+
+npriors_val <- unique(dataset$Number_of_Priors) %>% sort()
+Xtest <- matrix(0, length(npriors_val), ncol(X))
+Xtest[,1] <- npriors_val
+
+set.seed(3456)
+cf_predict <- predict(object = cforest, 
+                      newdata = Xtest, 
+                      estimate.variance = TRUE) %>%
+  mutate(Number_of_Priors = Xtest[ ,1])
+
+
+```
+
+
+
+## Intro: Hypothetical RCT
+
+In this tutorial, we imagine a following situation. 
+
+Assuming that the most important predictor of criminal behavior is poverty and lack of employment opportunities, the U.S. government mandated  a new job counselling and job placement  program for ex-offenders. Since the program was costly, the government decided to test its effectiveness by first running an RCT. 
+
+
+Imagine that half of the offenders on the COMPAS list were mandated to go through comprehensive job counselling and help with job placement, while the other half did not have any access to this program. At this moment we are abstracting from the recidivism rates.  
+
+I modified the COMPAS data you used in the previous tutorials in the following manner:
+
+* Dropped `Two_yr_Recidivism` variable
+* Added `jobhelp` dummy variable that indicates whether the individual was assigned to treatment or not
+* Added `wage` variable which records the average of the monthly income (in thousand USD) during the three years after the end of the job placement program for both treated and non-treated individuals.
+* Shifted `Number_of_Priors` so that it starts with zero.
+
+Both `jobhelp` and `wage` variables are simulated.
+
+You are part of the program assessment team and your task is to find the following information about the treatment effect of `jobhelp` on `wage`:
+
+* Average Treatment Effect (ATE)
+* Average Treatment Effect on the Treated
+* Conditional ATE for white offenders
+* Conditional ATE for black offenders
+* Check whether there is indeed heterogeneity in treatment effects
+* Find which group of offenders will benefit the most from the program
+* Find which group of offenders does not benefit and do not need the program 
+* Which characteristics of the offenders define the most the heterogeneity of treatment effects
+* Predict treatment effects for any new offender
+
+In this tutorial we will learn how to answer these questions using the [Generalized Random Forest](https://grf-labs.github.io/grf/REFERENCE.html)  algorithm developed by Susan Athey, Stefan Wager and Julie Tibshirani. 
+
+
+
+### Exercise -- Get acquainted with the dataset.
+
+
+*Complete the code below by filling in the blanks*
+
+```{r dataintro, exercise=TRUE, exercise.eval=FALSE}
+# See the head of the data
+____(dataset)
+
+# Get the density plot of the variable 'wage'
+dataset %>% ggplot(...) + 
+  
+# Get the number of people who were treated
+dataset %>% 
+  
+
+```
+
+```{r dataintro-hint}
+# See the head of the data
+head(dataset)
+
+# Get the density plot of wages
+dataset %>% ggplot(aes(x = wage)) + geom_density() + xlab("Wage (th USD)")
+  
+# Get the number of people who were treated
+dataset %>% count(jobhelp)
+
+```
+
+
+
+
+```{r quiz_howmany, echo = FALSE}
+quiz(
+  question("How many people were treated with the mandatory job placement help?",
+    answer("1000"),
+    answer("499"),
+    answer("501", correct = TRUE)
+  )
+)
+```
+
+
+## 1. Growing a Causal Forest
+
+```{r quiz_ct, echo = FALSE}
+quiz(
+  question("Causal Forest (CF) is different from Random Forest because",
+    answer("CF does not randomly sample observations when growing trees"),
+    answer("CF does not randomly sample variables when considering how to split data"),
+    answer("CF grows causal trees instead of decision trees ", correct = TRUE),
+    answer("CF's objective is to capture differences in treatment effects rather than in the outcome", correct = TRUE)
+  )
+)
+```
+
+```{r quiz_ct2, echo = FALSE}
+quiz(
+  question("In comparison to a Decision Tree, growing a Causal Tree:",
+    answer("requires more observations because CT uses just half of the data due to Honest Target", correct = TRUE),
+    answer("allows to get most accurate prediction of the outcome"),
+    answer("allows to get a consistent estimate of treatment effects", correct = TRUE),
+    answer("requires a random assignment of treatment or CIA (conditional independence assumption)", correct = TRUE)
+  )
+)
+```
+
+
+Since the assignment to the job placement program was completely random, and there was full compliance (mandatory program for ex-offenders), we can grow a Causal Forest to estimate the treatment effects.
+
+
+To grow a Causal Forest we will use the `causal_forest()` function from `grf` package.
+
+
+### Exercise -- Convert the dataset to a matrix 
+
+Unfortunately, `causal_forest()` accepts data only in matrix or vector form, not a data.frame object. Hence, the first step is to create the following objects: 
+
+* matrix `X` of predictors
+* vector `Y` which contains wage information
+* vector `W` which contains treatment status.
+
+**Fill in the blanks below, put the correct formula instead of the question mark. Hint: use `model.matrix()` function automatically convert a dataset into a numeric matrix**
+
+```{r createvars, exercise=TRUE, exercise.eval=FALSE}
+Y <- dataset$____
+W <- dataset$____
+
+X <- dataset %>%  select(-____, -____) %>%  
+  _____.______( ~ ?, data = .)
+
+# Drop the intercept (No need to change anything here)
+X <- X[ , -1]
+
+
+```
+
+```{r createvars-hint}
+Y <- dataset$wage
+W <- dataset$jobhelp
+
+X <- dataset %>%  select(-wage, -jobhelp) %>%  
+  model.matrix(~., .) 
+X <- X[ , -1]
+
+```
+
+
+### Exercise -- Grow a Causal Forest
+
+Now we are ready to grow our first Causal Forest.
+
+Please, grow a causal forest with the following parameters: 
+
+* 4000 causal trees.
+* We set `clusters = NULL` since our treatment was fully randomized, and not randomized within clusters 
+* For each individual causal tree use only a random 50% of observations (i.e., specify so for `sample.fraction`). 
+* Use all of the variables as potential split candidates by putting the correct `mtry` (you can always try with fewer variables later). 
+* Require the node size to be ten or more observations using  `min.node.size`. 
+* Keep 50% of the sampled data as estimation sample, and 50% as training sample using `honesty.fraction`. (Notice that it means that for any given tree we use 25% of initial data either to train or to estimate since we sample only half of data to begin with)
+* We set `honesty.prune.leaves = TRUE` in order to trim leaves that end up empty in the estimation sample
+* We set `tune.parameters = "none"`, since we are skipping cross-validation part for the sake of time. Otherwise, "the following parameters are tunable: ("sample.fraction", "mtry", "min.node.size", "honesty.fraction", "honesty.prune.leaves", "alpha", "imbalance.penalty")". 
+* Set `compute.oob.predictions=TRUE` to save the out-of-bag predictions that can be useful later.
+
+Save the resulting forest as `cforest`.
+
+**Fill in the gaps in the formula below**
+
+```{r cf, exercise=TRUE, exercise.eval=FALSE }
+set.seed(234)
+cforest <- causal_forest(
+  X = _,
+  Y = _,
+  W = _,
+  num.trees = ____,
+  clusters = NULL,
+  sample.fraction = __,
+  mtry = ____,
+  min.node.size = __,
+  honesty = TRUE,
+  honesty.fraction = __,
+  honesty.prune.leaves = TRUE,
+  tune.parameters = "none"
+)
+cforest
+```
+
+```{r cf-hint}
+set.seed(234)
+cforest <- causal_forest(
+  X,
+  Y,
+  W,
+  num.trees = 4000,
+  clusters = NULL,
+  sample.fraction = 0.5,
+  mtry =  ncol(X),
+  min.node.size = 10,
+  honesty = TRUE,
+  honesty.fraction = 0.5,
+  honesty.prune.leaves = TRUE,
+  tune.parameters = "none",
+  compute.oob.predictions = TRUE
+)
+cforest
+```
+
+
+
+## 2. Variable importance
+
+### Exercise -- Get a plot of a single tree
+
+We have successfully trained a Causal Forest and saved it as `cforest`.  
+
+We know that one of the downsides of forests is that we can no longer represent the segmentation graphically as a tree, because a forest combines information from many trees.
+
+Nevertheless, we can still access one of the 4000 causal trees we grew as part of the forest and visualize it.
+
+For example, the code below uses `get_tree()` function to access the very first causal tree (out of 4000) and plots it. The resulting plot tells you about the splitting rules, the number of observations in each resulting leaf using estimation sample, and the mean outcome "avg_Y" (unfortunately, not the mean treatment effect) and the share of treated "avg_W".
+
+
+*Change the code below to access the 42nd causal tree*
+
+```{r plotonetree, exercise=TRUE, exercise.eval=TRUE}
+plot(get_tree(cforest, index=1))
+```
+
+```{r plotonetree-hint}
+plot(get_tree(cforest, index=42))
+```
+
+Remember that the very first split  of a decision tree usually indicates the most important predictor for Y. In the end, the very first split finds the variable that helps the most in minimizing RSS. Similarly, a causal tree first splits at a variable that helps the most to capture differences in treatment effects.
+
+```{r quiz_t1, echo = FALSE}
+quiz(
+  question("The most important variable that affects heterogeneity in treatment effects in causal tree number 1 is:",
+    answer("Number_of_Priors"),
+    answer("Ethnicity"),
+    answer("Female"),
+    answer("AgeAbove45"),
+    answer("AgeBelow25", correct = TRUE),
+    answer("Misdemeanor")
+  )
+)
+```
+
+```{r quiz_t1234, echo = FALSE}
+quiz(
+  question("The most important variable that affects heterogeneity in treatment effects in causal tree number 42 is:",
+    answer("Number_of_Priors", correct = TRUE),
+    answer("Ethnicity"),
+    answer("Female"),
+    answer("AgeAbove45"),
+    answer("AgeBelow25"),
+    answer("Misdemeanor")
+  )
+)
+```
+
+As you can see the split rules changed quite a lot if we compare the very first tree to the 42ns tree. This instability is remedied exactly by bootstrapping our sample 4000 times.
+
+A better way to see the importance of the variable is by checking how often any given variable was used for splitting overall across all 4000 trees. 
+
+
+
+### Exercise -- Find which variables are the most important ones for predicting heterogeneity of treatment effects
+
+We can use function `variable_importance()` to get a simple weighted sum of how many times variable $i$ was split on at each depth in the forest. Hence, the most important variable for the heterogeneity in treatment effects will have the highest share of splits.
+
+
+
+```{r importance, exercise=TRUE, exercise.eval=FALSE}
+
+variable_importance(_____)
+
+```
+
+```{r importance-hint}
+
+variable_importance(cforest)
+
+```
+
+```{r quiz_imp, echo = FALSE}
+quiz(
+  question("The most important variable that affects heterogeneity in treatment effects is:",
+    answer("The first predictor -- `Number_of_Priors` -- with around 76% of weighted splits attributable to this variable", correct = TRUE),
+    answer("The second predictor -- `Age_BAbove_FortyFive`  -- with (100 - 3.1)% of weighted splits  attributable to this variable"),
+    answer("There is no clear most important predictor of the heterogeneity in treatment effects")
+  )
+)
+```
+
+
+## 3. Estimating Treatment Effects
+
+Finally, let's calculate some treatment effects.
+
+Function `average_treatment_effect()` does exactly what we want.
+
+### Exercise -- Calculate ATE and ATT
+
+For example, in the exercise code below you can already see the example of how to calculate ATE. Since we are interested in ATE, we indicate that the target sample is "all".
+
+*Change the target sample to "treated" to get the ATT*
+
+```{r ate, exercise = TRUE, exercise.eval = TRUE}
+set.seed(456)
+average_treatment_effect(cforest, target.sample = "all")
+```
+
+```{r ate-hint}
+set.seed(456)
+average_treatment_effect(cforest, target.sample = "treated")
+```
+
+```{r quiz_ate, echo = FALSE}
+quiz(
+  question("What does an ATE of 0.071 mean for the average monthly income of ex-offenders in the next three years?",
+    answer("The mandatory job assistance program increases on average the monthly income of the treated by 7.1%."),
+    answer("The mandatory job assistance program increases on average the monthly income  of the treated by 71 USD", correct = TRUE),
+    answer("The mandatory job assistance program increases the average monthly income growth rate  of the treated by 7.1 percentage points"),
+    answer("The mandatory job assistance program explains 7.1% of the average monthly income gap between the treated and the control group")
+  )
+)
+```
+
+```{r quiz_ateatt, echo = FALSE}
+quiz(
+  question("The ATE is very close to ATT. Why is it so?",
+    answer("It is just a coincidence"),
+    answer("We expected it to be so", correct = TRUE),
+    answer("Thanks to the randomized treatment, treated and controls have on average the same treatment effects, i.e., the groups are truly balanced", correct = TRUE)
+  )
+)
+```
+
+### Run an OLS instead
+
+Well, this is all fancy to calculate the ATE using causal forest. But we also know that the OLS should do a good job, especially since there are no confounders because the assignment to treatment was administered completely at random.
+
+**Run an OLS in the code chunk below**. Does the estimate of the ATE using OLS coincide with the earlier estimate by the causal forest?
+```{r ols, exercise = TRUE, exercise.eval=FALSE}
+
+```
+
+```{r ols-hint}
+lm(wage ~ ., data= dataset)
+```
+
+
+```{r quiz_ols, echo = FALSE}
+quiz(
+  question("The ATE estimated by OLS",
+    answer("is much higher than the ATE estimate by the forest"),
+    answer("is broadly in line with the ATE estimate by the forest", correct = TRUE),
+    answer("is much lower than the ATE estimate by the forest")
+  )
+)
+```
+
+### Exercise -- Test whether there is heterogeneity of treatment effects
+
+To test how well the causal forest we trained performs relative to a model with no splits (just a constant treatment effect model), we will use `test_calibration()` function, which runs for us the test, developed by [Chernozhukov, Demirer, Duflo, and Fernandez-Val (2017)](https://www.nber.org/papers/w24678). The test
+fits a linear model of the target estimand as a function of average treatment effect of the program on wages
+– the mean GRF prediction – and the differential  treatment effect of the program on wages 
+as predicted by the GRF out-of-sample. If the GRF captures no additional variation in treatment effects, then the coefficient in front of the differential prediction will be zero.
+
+**Finish the code below to run the calibration test**
+```{r calibration, exercise = TRUE, exercise.eval=FALSE}
+test_calibration(_______)
+
+```
+
+```{r calibration-hint}
+test_calibration(cforest)
+
+```
+
+
+```{r quiz_calibration1, echo = FALSE}
+quiz(
+  question("Based on the results of the test you can conclude that:",
+    answer("The causal forest does not perform better than just a constant treatment effect model. We cannot reject the null of no heterogeneity in treatment effects."),
+    answer("The causal forest performs better than just a constant treatment effect model, i.e., it captures some heterogeneity in treatment effects", correct = TRUE),
+    answer("We can reject the null of no heterogeneity", correct = TRUE),
+    answer("The mean forest prediction  is correct", correct = TRUE),
+    answer("The mean forest prediction  is incorrect")
+  )
+)
+```
+
+### Quiz results: Explanation
+
+Since the estimated coefficient in front of the `differential.forest.prediction` term is significantly greater than zero (p-value is much lower than 5%), we can reject the null hypothesis of no heterogeneity in treatment effects. In other words, the causal forest splits the covariate space in such a way that the treatment effect in one group is indeed different from the treatment effect in another group. From the description of the test, *"A coefficient of 1 for 'mean.forest.prediction' suggests that the mean forest prediction is correct, whereas a coefficient of 1 for 'differential.forest.prediction' additionally suggests that the forest has captured heterogeneity in the underlying signal. "*
+
+We have both, a coefficient of 1 for the `mean.forest.prediction` and a coefficient of 1 for the `differential.forest.prediction`. Hence, not only our causal forest captures heterogeneity in TE, but it also has the mean prediction that is correct. Good sign!
+
+
+
+### Exercise -- Calculate ATE for black and white ex-offenders separately
+
+We can also investigate how the ATE changes within different subgroups of ex-offenders.
+
+For example, the code below calculate the Conditional ATE for Caucasian ex-offenders.
+
+*Change the code below to calculate ATE for black ex-offenders. Hint: you just need to change one character; remember that we have just two ethnicity groups in the sample: Caucasians and African-Americans*
+
+```{r cate_ethnicity, exercise = TRUE, exercise.eval = TRUE}
+average_treatment_effect(cforest, target.sample = "all", subset = X[ , "ethnicityCaucasian"] == 1)
+```
+
+```{r cate_ethnicity-hint}
+average_treatment_effect(cforest, target.sample = "all", subset = X[ , "ethnicityCaucasian"] == 0)
+```
+
+```{r quiz_ethnate, echo = FALSE}
+quiz(
+  question("As you can see ATE for African-American ex-offenders is 50% higher than the ATE for Caucasian ex-offenders. Combining this result with  the results of the previous section which revealed the variables that are important for the heterogeneity in TE, we can surmise that:",
+    answer("The ethnicity is in fact one of the most important factors determining the heterogeneity in TE"),
+    answer("Black and white ex-offenders probably on average differ in the number of priors -- the most important factor determining the heterogeneity in TE --  resulting that their ATE to be different too.", correct = TRUE),
+    answer("There is no clear hypothesis for such difference")
+  )
+)
+```
+
+### Exploring heterogeneity in treatment effects
+
+Remember that the `variable_importance()` function in the previous section indicated that by far `Number_of_Priors` was the most important factor explaining the heterogeneity in treatment effects.
+
+Hence, now we want to explore how treatment effects differ at different values of `Number_of_Priors`. How can we do that?
+
+We can create a new matrix X, where we fix all other variables but we vary only the values of `Number_of_Priors`.
+
+For example, we can create a matrix, `X_test`, with all variables set to zero. First, recognize that `Number_of_Priors` is in fact a discrete variable. In the code below we first capture all the unique values `Number_of_Priors` has in our dataset and save it as `npriors_val`. Then we create the matrix with all variables set to zero, except the first variable which corresponds to `Number_of_Priors`. Here, we substitute it with the grid of values saved in `npriors_val`. Finally, the code shows you the head of the matrix.
+
+```{r createXtest, exercise = TRUE}
+
+npriors_val <- unique(dataset$Number_of_Priors) %>% sort()
+Xtest <- matrix(0, length(npriors_val), ncol(X))
+Xtest[,1] <- npriors_val
+head(Xtest)
+```
+
+
+
+### Exercise -- Predict treatment effects for the artificial test data
+
+Now, since we have constructed our `Xtest` data where we control for all other predictors but vary the number of priors, we can create personalized estimates of the treatment effects. We use function `predict()` to get the TE predictions for the hypothetical new observations -- each row of the `Xtest` -- using the model saved as `cforest`.  Notice that we also ask to estimate the variance of the TE estimator. Save the prediction as `cf_predict` dataset.
+
+
+*Finish the code below, substitute blanks*
+
+```{r predict, exercise = TRUE, exercise.eval = FALSE}
+set.seed(3456)
+cf_predict <- predict(object = _______, 
+                      newdata = ____, 
+                      estimate.variance = TRUE) %>%
+  mutate(Number_of_Priors = Xtest[ ,1])
+
+head(cf_predict)
+```
+
+```{r predict-hint}
+set.seed(3456)
+cf_predict <- predict(object = cforest, 
+                      newdata = Xtest, 
+                      estimate.variance = TRUE) %>%
+  mutate(Number_of_Priors = Xtest[ ,1])
+
+head(cf_predict)
+```
+
+
+As you can see it creates a dataframe with two variables: 
+
+1. predictions -- stores the estimated Treatment Effect at given values of X
+2. variance.estimates -- stores the variance of the TE estimator at given values of X
+
+### Exercise -- Visualize the heterogeneity
+
+Finally, visualize the estimated heterogeneity in treatment effects due to `Number_of_priors`. You want  a graph which shows how the estimated Treatment Effects (y-axis) vary depending on the number of priors (x-axis). We also want 95% confidence interval. Remember, that we can get the 95% confidence interval by adding or subtracting 1.96*SE of the estimator.
+
+
+*Fill in the blanks in the code below*
+
+```{r predictgraph, exercise = TRUE, exercise.eval = FALSE}
+ggplot(aes(x = ________, y = ______), data = ______) +
+  geom_errorbar(aes(ymin=predictions - 1.96*sqrt(________),
+                    ymax=predictions + 1.96*sqrt(________)), colour = "black", width=.1) +
+    geom_line() +
+    geom_point(size=3)
+```
+
+```{r predictgraph-hint}
+ggplot(aes(x = Number_of_Priors, y = predictions), data = cf_predict) +
+  geom_errorbar(aes(ymin=predictions - 1.96*sqrt(variance.estimates),
+                    ymax=predictions + 1.96*sqrt(variance.estimates)), colour = "black", width=.1) +
+    geom_line() +
+    geom_point(size=3)
+    
+```
+
+```{r quiz_graph, echo = FALSE}
+quiz(
+  question("What does the graph say?",
+    answer("The program is more beneficial for people with fewer priors"),
+    answer("The program is more beneficial for people with more priors", correct = TRUE)
+  )
+)
+```
+
+```{r quiz_graph2, echo = FALSE}
+quiz(
+  question("Why do you think the estimated TE increase with the number of priors in sort of linear fashion but then become flat for higher number of priors?",
+    answer("It could be because the positive effect of the treatment indeed stops growing after a certain number of priors", correct = TRUE),
+    answer("It could be that the positive effect of the treatment keeps growing but we are unable to capture the heterogeneity there due to a limited sample size", correct = TRUE)
+  )
+)
+```
+
+To see whether indeed we have too few observations in the right tail of the distribution of `Number_of_Priors`, we can plot the distribution:
+
+```{r distr_priors, exercise=TRUE, exercise.eval=TRUE}
+dataset %>% ggplot(aes(x = Number_of_Priors)) + geom_density()
+```
+
+
+Indeed, the graph shows that we have too few observations for the values greater than 1.5. So we actually cannot know for sure whether the flattening is caused by true change in the relationship between treatment effects and the number of priors,  or due to insufficient data in that region. 
+
+
+
+
+### Little secret
+
+Wait, actually we can. Well, not in reality, not when you work with real data. But this time, I simulated the data, I know the true treatment effects. 
+
+The true formula for treatment effects was `te = 0.1*Number_of_Priors`. Hence, let's plot everything again with the true values.
+
+```{r plotagain, echo = TRUE}
+cf_predict_withtruth <- cf_predict %>%  
+  mutate(true_effect = 0.1*Xtest[ ,1])
+
+ggplot(aes(x = Number_of_Priors, y = predictions), data = cf_predict) +
+  geom_errorbar(aes(ymin=predictions - 1.96*sqrt(variance.estimates),
+                    ymax=predictions + 1.96*sqrt(variance.estimates)), colour = "black", width=.1) +
+    geom_line() +
+    geom_point(size = 3) +
+    geom_line(aes(x = Number_of_Priors, y = true_effect ), data = cf_predict_withtruth, color = "red")
+```
+
+
+### So what happened?
+
+Now you can clearly see that the Causal Forest did not have enough data to split on `Number_of_Priors` for values beyond 1.5. So it lumped together those values and estimated the average treatment effect for a group of offenders with number of priors greater than 1.5-2.0.
+
+However, this is how Causal Forest works for extreme values. In fact, it did a pretty good job for more frequent groups of offenders with the  number of priors in the range of 0 to 1.5.
+
+Now, since you know that I created the heterogeneous treatment effects using only `Number_of_Priors` as a mediator, take a second to appreciate that the Causal Forest indeed did find that `Number_of_Priors` is  the most (and by far only) important factor capturing the heterogeneity in treatment effects. 
+
+You did not have to write a single line of sophisticated formula in a regression to uncover. All you had to do is to pass X, Y, and W objects to `causal_forest()` function. That's what makes this tool amazing. Now the search for heterogeneity in treatment effects is truly data-driven.
+
+## Afterword
+
+Now, creating an artificial Xtest matrix and varying only one variable at a time may help you uncover the extent of heterogeneity across different dimensions at an analytical level.
+
+However, you still need to deliver guidance to the government, right?
+
+
+You can use the results of the causal forest that creates prediction of the TE for every new ex-offender, compares the expected TE to the marginal cost of the job assistance program,  and then it delivers personalized recommendations of treatment eligibility (yes/no) for that particular ex-offender.
+
+Alternatively, you can try to grow just one causal tree and use the segmentation delivered by that tree to tell policymakers which groups are eligible and which are not. However, as we saw that using just one tree might be a bad idea since individual trees might be unstable (non-robust). In this case, you need to use cross-validation  for every single free parameter in order to prune the tree in a correct manner. In general, you can then see how worse your single Causal Tree performs with respect to the Causal Forest. If the performance is comparable, then you may use a single Causal Tree to inform policymakers, as this approach is much more transparent.
+
+In either case, be prepared to be attacked on the fairness grounds. You would need to check in advance that your policy prescriptions would be seen as fair. Also, you need to defend: 
+
+* why do you use wage as the only outcome to judge the effect of the program? Are there other important outcomes that we need to capture the welfare effect of the program? 
+* Have you used enough observations? 
+* etc.
+
+
+## What if treatment is not random?
+
+What if the uptake of the job training program was not so random? What if there were non-compliers: some ex-offenders decided to be in the program even if they were not initially assigned to the treatment group, while some of the ex-offenders opted out of the program even if they were assigned to the treatment group.
+
+We know that this may complicate our estimation problem. However, you strongly believe that the reasons for non-compliance are mostly explained by the characteristics you have in the data, in particular, by the ethnicity of the ex-offenders.
+
+I created a separate dataset called `dataset2` which contains the same kind of data as in `dataset`, but where `jobhelp` variable is no longer assigned at random.
+
+To check whether treatment `jobhelp` correlates with any of the other variables in the dataset, we can simply run a linear model regressing `jobhelp` on other variables (except wage) and looking at the F-statistics for joint significance of all regressors.
+
+```{r correlates, exercise=TRUE, exercise.eval=TRUE}
+lm(jobhelp ~ .-wage, data =dataset2) %>%  summary()
+```
+
+Indeed, these six regressors are jointly significant in explaining assignment to treatment `jobhelp`, since p-value of the F-test is much below the 5% threshold. 
+
+Remember that we have already established that the true average treatment effect of the program is 71 USD ($\pm$ 7 USD standard error). This remains the true average treatment effect even if we there is a change in the assignment to treatment. However, would we be able to get the correct estimate of the ATE by using a simple OLS?
+
+
+```{r notrandom-ols, echo =TRUE}
+lm(wage ~ jobhelp + ., data = dataset2) %>%  tidy()
+```
+
+Apparently, no. The estimate of the ATE using the OLS regression is at 93 USD ($\pm$ 9 USD standard error).
+
+
+Now what happens if we run a causal forest? 
+
+**Fill in blanks below.**  Run  a causal forest but now tune all tunable parameters (i.e., `tune="all"`).
+
+```{r notrandom-grf, exercise = TRUE, exercise.eval=FALSE}
+
+X2 <- dataset2 %>% 
+
+X2 <- X2[ , -1] # remove the intercept
+
+set.seed(234)
+cforest2 <- causal_forest(
+  X = X2,
+  Y = ____________,
+  W = ____________,
+  num.trees = ____,
+  clusters = ____,
+  sample.fraction = __,
+  honesty = _____,
+  tune.parameters = 
+)
+cforest2
+
+average_treatment_effect(cforest2, target.sample = "all")
+
+```
+
+```{r notrandom-grf-hint}
+
+X2 <- dataset2 %>%  select(-wage, -jobhelp) %>%  model.matrix( ~., data =.)
+
+X2 <- X2[ , -1]
+
+set.seed(234)
+cforest2 <- causal_forest(
+  X = X2,
+  Y = dataset2$wage,
+  W = dataset2$jobhelp,
+  num.trees = 4000,
+  clusters = NULL,
+  sample.fraction = 0.5,
+  honesty = TRUE,
+  tune.parameters = "all"
+)
+cforest2
+
+average_treatment_effect(cforest2, target.sample = "all")
+
+```
+
+```{r quiz_grf_vs_ols, echo = FALSE}
+quiz(
+  question("The GRF algorithm calculates ATE which is ",
+    answer("Completely wrong"),
+    answer("Same as the OLS result"),
+    answer("Same as the true ATE"),
+    answer("Slightly below than the true ATE"),
+    answer("Slightly above than the true ATE, but still better than the OLS estimate", correct=TRUE)
+  )
+)
+```
+
+
+### Why is GRF performing better than the OLS?
+
+We learned last week how Double Machine Learning can help us with partialling out the effects of confounders. 
+In fact, `causal_forest()` implements DML under the hood: it always fits two regression forests, for `Y` and `W`, and uses the out-of-bag prediction errors to fit the causal forest.
+
+Let's do these prediction steps by hand to see how you can actually supply the predictions in the `causal_forest()` formula. Knowing this allows you to use other prediction models (e.g., lasso), if you want, instead of the regression trees.
+
+**Fill in the blanks in the code below.** We will use a `regression_forest()` function that comes from the `grf` package. Please, tune all tunable parameters.
+
+```{r grf-manual-prediction, exercise =TRUE, exercise.eval=FALSE}
+set.seed(456)
+# Fit a regression model to predict treatment variable 'jobhelp'
+forest.W <- regression_forest(X = __, Y = _____________, tune.parameters = "___")
+# Get out-of-bag predictions for 'jobhelp'
+W_hat <- predict(_________)$predictions
+
+# Fit a regression model to predict outcome variable 'wage'
+forest.Y <- regression_forest(X = __, Y = _____________, tune.parameters = "___")
+# Get out-of-bag predictions for 'wage'
+Y_hat <- 
+
+# Fit a causal forest, but supply the predictions for Y and W which you have found earlier: Y.hat and W.hat
+cforest3 <- causal_forest(
+  X = __,
+  Y = _______________,
+  W = _______________,
+  Y.hat = ___,
+  W.hat = ___,
+  num.trees = 4000,
+  clusters = NULL,
+  sample.fraction = 0.5,
+  honesty = TRUE,
+  tune.parameters = "___"
+)
+
+# Estimate the average treatment effect
+average_treatment_effect(___________, target.sample = "___")
+
+```
+
+```{r grf-manual-prediction-hint}
+set.seed(456)
+# Fit a regression model to predict treatment variable 'jobhelp'
+forest.W <- regression_forest(X = X2, Y = dataset2$jobhelp, tune.parameters = "all")
+# Get out-of-bag predictions for 'jobhelp'
+W_hat <- predict(forest.W)$predictions
+
+# Fit a regression model to predict outcome variable 'wage'
+forest.Y <- regression_forest(X = X2, Y = dataset2$wage, tune.parameters = "all")
+# Get out-of-bag predictions for 'wage'
+Y_hat <- predict(forest.Y)$predictions
+
+# Fit a causal forest, but supply the predictions for Y and W which you have found earlier: Y.hat and W.hat
+cforest3 <- causal_forest(
+  X = X2,
+  Y = dataset2$wage,
+  W = dataset2$jobhelp,
+  Y.hat = Y_hat,
+  W.hat = W_hat,
+  num.trees = 4000,
+  clusters = NULL,
+  sample.fraction = 0.5,
+  honesty = TRUE,
+  tune.parameters = "all"
+)
+
+# Estimate the average treatment effect
+average_treatment_effect(cforest3, target.sample = "all")
+
+```
+
+If you have time, try to use Lasso as a prediction model for Y or W or both. Do not forget to include interaction terms.
+
+
+### Self-selection based on unobservables
+
+Now suppose that the participation in the program was actually driven a lot by the employment status of the participants which they had before committing the offense. For example, those who had a stable job before the arrest were more likely to participate in the program. But these people were also more likely to earn higher salaries anyways. Unfortunately, the dataset does not record the pre-arrest employment status. In this case, you are facing positive selection based on unobservable characteristics. 
+
+Do you think the GRF procedure would perform well in this circumstance?
+
+
+
+Let's again simulate a new assignment to treatment but this time it also should depend on unobservable characteristics.
+
+The code below shows the GRF's estimate of the ATE in such situation.
+
+```{r grf-unobservable, exercise = TRUE, exercise.eval=TRUE}
+set.seed(456)
+X3 <- dataset3 %>%  select(-wage, -jobhelp) %>%  model.matrix( ~., data =.)
+X3 <- X3[ , -1]
+
+
+# Fit a causal forest, but supply the predictions for Y and W which you have found earlier: Y.hat and W.hat
+cforest_nonobservable <- causal_forest(
+  X = X3,
+  Y = dataset3$wage,
+  W = dataset3$jobhelp,
+  num.trees = 4000,
+  tune.parameters = "all"
+)
+
+# Estimate the average treatment effect
+average_treatment_effect(cforest_nonobservable, target.sample = "all")
+
+```
+
+As you can see, the estimate of the ATE in this case significantly overestimates the true ATE of the program.
+
+
+
