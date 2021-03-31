@@ -4,7 +4,7 @@
 
 # PRELIMINARIES -----------------------------------------
 # Install packages that are needed today
-install.packages(c("tidyverse", "sf", "maps", "ggmap", "osmdata", "viridis"))
+# install.packages(c("tidyverse", "sf", "maps", "ggmap", "osmdata", "viridis"))
 
 
 
