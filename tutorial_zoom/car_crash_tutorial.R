@@ -47,9 +47,10 @@ fars <- left_join(fars_crash, fars_person)
 nrow(fars) == nrow(fars_person) # It has the same number of obs as fars_person
 
 # Look at this: the join operation repeated the case-level information for each person. Hence, fars dataset is now at person-level resolution
-fars %>% select(ST_CASE, LONGITUD, LATITUDE, PER_NO, SEXNAME)
+fars %>% select(ST_CASE, LONGITUD, LATITUDE, PER_NO, SEXNAME, RACENAME)
 
 # To return back fars dataset to case-level resolution but without loosing information about each person, we can nest personal information about each crash participant
+
 fars <- fars %>%
   group_by_at(vars(names(fars_crash))) %>%
   nest() %>%
@@ -64,6 +65,7 @@ nrow(fars) == nrow(fars_crash) # Now it has the same number of obs as fars_crash
 # fars is different from fars_crash by only one column
 setdiff(names(fars), names(fars_crash))
 
+glimpse(fars)
 # let's rename the data column into something more meaningful
 fars <- fars %>%
   rename(person_data = data)
@@ -111,10 +113,10 @@ fars %>% group_by(LGT_CONDNAME) %>% summarise(n=n()) # Correct
 # Use PEDS column which records how many pedestrians are involved in the crash
 
 # Which of the following is correct [Poll]
-fars %>% summarise(sum(PEDS)) # ?
-fars %>% count(PEDS>0) # ?
-fars %>% group_by(PEDS>0) %>% summarise(n = n()) # ?
-fars_person %>% count(PEDS>0) # ?
+fars %>% summarise(sum(PEDS)) #Incorrect
+fars %>% count(PEDS>0) # Correct
+fars %>% group_by(PEDS>0) %>% summarise(n = n()) # Correct
+fars_person %>% count(PEDS>0) # Incorrect
 
 
 # Count N obs by number of pedestrians involved in the crash
@@ -139,8 +141,10 @@ fars %>%
 
 # Please write your suggestions in the chat
 fars %>%
-  group_by(________) %>%
-  summarise(________)
+  group_by(PEDS>0) %>%
+  summarise(average= mean(FATALS))
+summary_table %>% select(average)
+summary_table %>% pull(average)
 
 # N obs per CITYNAME.
 
@@ -148,7 +152,7 @@ fars %>% count(CITYNAME, sort=TRUE)
 
 fars %>%
   filter(CITYNAME != "NOT APPLICABLE", CITYNAME != "Not Reported") %>%
-  count(CITYNAME, sort=TRUE)
+  count(CITYNAME, STATENAME, sort=TRUE)
 
 # Question for you: Can you find which city names are repeated across different states?
 
@@ -177,15 +181,17 @@ fars %>%  select(person_data)
 
 # Inspect: Look at the RACENAME of people involved in the first crash in our fars data
 # Write your answer in the chat
-fars$_____________________
+fars$person_data[[3]]$RACENAME
 
 # Get a TRUE/FALSE answer to whether there are any Black people involved in the first crash
-"Black" %in% fars$_____________________
+"Black" %in% fars$person_data[[3]]$RACENAME
 
 # Create a new variable called black_dead which stores TRUE/FALSE indicators on whether the crash involves one or more Black people
-
+fars %>%  select(LONGITUD, person_data)
 fars <- fars %>%
   mutate(black_dead = map_lgl(.x = person_data,~"Black" %in% .x$RACENAME))
+names(fars)
+fars %>% count(black_dead)
 
 # What does map_lgl() do different from just map()?
 # What does .x do?
@@ -258,7 +264,7 @@ usa <-  st_as_sf(maps::map('usa', plot = FALSE, fill = TRUE))
 
 # Plotting the crash data together with the U.S. map
 ggplot() + geom_sf(data = usa) +
-  geom_sf(data=fars_sf, alpha = 0.01, size = 0.5) +
+  geom_sf(data=fars_sf) +
   coord_sf(xlim = c(-130, -60),
            ylim = c(20, 50))
 
@@ -268,7 +274,9 @@ ggplot() + geom_sf(data = usa) +
 
 # Convert fars_ch into an SF object -----------------------------------------
 # Now you need to convert fars_ch into an sf object
-fars_ch_sf <- (Complete the code)
+fars_ch_sf <- fars_ch %>%
+  filter(LONGITUD < 77.7, LATITUDE <777.7) %>% # Keep only obs with present coordinates
+  st_as_sf(coords = c("LONGITUD", "LATITUDE"), crs = "+proj=longlat +datum=WGS84 +no_defs", remove = FALSE)
 
 # How would you complete the code?
 
@@ -394,7 +402,7 @@ ggsave("./tutorial_zoom/output/crashes_chicago.png", scale = 0.8)
 
 glimpse(censusdata_sf)
 
-fars_ch_demo <- st_join(fars_ch_sf, censusdata_sf[ , 19:ncol(censusdata_sf)], left = TRUE)
+fars_ch_demo <- st_join(fars_ch_sf, censusdata_sf, left = TRUE)
 
 glimpse(fars_ch_demo)
 
